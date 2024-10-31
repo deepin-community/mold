@@ -1,22 +1,143 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: template-repository
-Source: https://github.com/deepin-community/template-repository
+Upstream-Name: mold
+Upstream-Contact: ruiu@cs.stanford.edu
+Source: https://github.com/rui314/mold
+Files-Excluded: third-party/mimalloc/bin/mimalloc-redirect.dll
+                third-party/mimalloc/bin/mimalloc-redirect32.dll
+                third-party/mimalloc/bin/minject.exe
+                third-party/mimalloc/bin/minject32.exe
+                third-party/zlib/contrib/dotzlib
 
 Files: *
-Copyright: 2023 Tsic404 <liuheng@deepin.org>
+Copyright: 2020-2024 Rui Ueyama <ruiu@cs.stanford.edu>
+License: MIT
+
+Files: third-party/tbb/*
+Copyright: 2005-2021, Intel Corporation
+License: Apache-2.0
+ On Debian systems the full text of the Apache Software License 2.0 can be
+ found in the `/usr/share/common-licenses/Apache-2.0' file.
+
+Files: third-party/mimalloc/*
+Copyright: 2018, 2020, Microsoft Research, Daan Leijen
+License: expat
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this data (the "Data"), to deal in the Data without
+ restriction, including without limitation the rights to use, copy,
+ modify, merge, publish, distribute, sublicense, and/or sell copies of
+ the Data, and to permit persons to whom the Data is furnished to do
+ so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be
+ included in all copies or substantial portions of the Data.
+ .
+ THE DATA ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ WITH THE DATA OR THE USE OR OTHER DEALINGS IN THE DATA.
+
+Files: third-party/tbb/python/tbb/pool.py
+ third-party/tbb/python/tbb/test.py
+Copyright: 2006-2008, R Oudkerk (multiprocessing.Pool)
+  2008, 2016, david decotigny (Pool of threads)
+  2016-2021, Intel Corporation
+License: BSD-3-clause
+
+Files: third-party/tbb/third-party-programs.txt
+Copyright: 1994-2008, John E. Stone.
+  2004-2005, High Performance Computing Center Stuttgart, University of Stuttgart.
+  2004-2005, The Regents of the University of California.
+  2004-2005, The University of Tennessee and The University of Tennessee Research Foundation.
+  2004-2006, The Trustees of Indiana University and Indiana University Research and Technology Corporation.
+  2005-2014, Intel Corporation.
+  2006-2008, R Oudkerk (multiprocessing.Pool)
+  2008, 2016, david decotigny (this file)
+  2009, CNRS
+  2009-2012, Oracle and/or its affiliates.
+  2009-2015, Cisco Systems, Inc.
+  2009-2015, Universite Bordeaux
+  2009-2016, Inria.
+  2010, IBM
+  2010, Jirka Hladky
+  2011, Google Inc.
+  2012, Aleksej Saushev, The NetBSD Foundation
+  2012, Blue Brain Project, EPFL.
+  2013-2014, University of Wisconsin-La Crosse.
+  2015, Research Organization for Information Science and Technology (RIST).
+  2015-2016, Intel, Inc.
+  2016-2019, Viktor Kirilov
+  disclaimer
+License: BSD-3-clause
+
+Files: third-party/tbb/src/tbbmalloc_proxy/proxy_overload_osx.h
+Copyright: 2005-2021, Intel Corporation
+  2011, Google Inc.
+License: BSD-3-clause
+
+Files: third-party/tbb/test/common/doctest.h
+Copyright: 2016-2019, Viktor Kirilov
+  2020-2021, Intel Corporation
+License: Apache-2.0
+ On Debian systems the full text of the Apache Software License 2.0 can be
+ found in the `/usr/share/common-licenses/Apache-2.0' file.
+
+
+Files: third-party/mimalloc/docs/dynsections.js
+ third-party/mimalloc/docs/navtree.js
+ third-party/mimalloc/docs/navtreedata.js
+ third-party/mimalloc/docs/resize.js
+ third-party/mimalloc/docs/search/search.js
+Copyright: 1997-2017, Dimitri van Heesch
 License: GPL-2+
- This package is free software; you can redistribute it and/or modify
- it under the terms of the GNU General Public License as published by
- the Free Software Foundation; either version 2 of the License, or
- (at your option) any later version.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
  .
- This package is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
  .
- You should have received a copy of the GNU General Public License
- along with this program. If not, see <https://www.gnu.org/licenses/>
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: BSD-3-Clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
  .
- On Debian systems, the complete text of the GNU General
- Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+ 1. Redistributions of source code must retain the above copyright notice, this
+ list of conditions and the following disclaimer.
+ .
+ 2. Redistributions in binary form must reproduce the above copyright notice,
+ this list of conditions and the following disclaimer in the documentation
+ and/or other materials provided with the distribution.
+ .
+ 3. Neither the name of the copyright holder nor the names of its contributors
+ may be used to endorse or promote products derived from this software without
+ specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License: GPL-2+
+ On Debian systems, the full text of the GNU General Public License
+ version 2 can be found in the file '/usr/share/common-licenses/GPL-2'.

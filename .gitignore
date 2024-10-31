@@ -1,0 +1,10 @@
+*.o
+*.so
+*~
+**/.DS_Store
+.cache
+core
+gentoo
+/mold-*.tar.gz
+/build*
+/mold
