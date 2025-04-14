@@ -53,7 +53,9 @@ static void r_create_synthetic_sections(Context<E> &ctx) {
   ctx.strtab = push(new StrtabSection<E>);
   ctx.symtab = push(new SymtabSection<E>);
   ctx.shstrtab = push(new ShstrtabSection<E>);
-  ctx.note_property = push(new NotePropertySection<E>);
+
+  if constexpr (is_x86<E>)
+    ctx.extra.note_property = push(new NotePropertySection<E>);
 
   if constexpr (is_riscv<E>)
     ctx.extra.riscv_attributes = push(new RiscvAttributesSection<E>);
@@ -109,10 +111,7 @@ template <typename E>
 static void r_claim_unresolved_symbols(Context<E> &ctx) {
   Timer t(ctx, "r_claim_unresolved_symbols");
 
-  tbb::parallel_for_each(ctx.objs, [&](ObjectFile<E> *file) {
-    if (!file->is_alive)
-      return;
-
+  tbb::parallel_for_each(ctx.objs, [](ObjectFile<E> *file) {
     for (i64 i = file->first_global; i < file->elf_syms.size(); i++) {
       const ElfSym<E> &esym = file->elf_syms[i];
       Symbol<E> &sym = *file->symbols[i];

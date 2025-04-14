@@ -5,6 +5,10 @@
 # Concretely speaking, ARM as uses "@" as a start of a comment.
 [ $MACHINE = arm ] && skip
 
+# All data symbols need to be aligned to 2 byte boundaries on s390x,
+# so rodata.str1.1 in this file is invalid on s390x.
+[ $MACHINE = s390x ] && skip
+
 cat <<'EOF' | $CC -c -o $t/a.o -x assembler -
 .globl val1, val2, val3, val4, val5
 
@@ -43,8 +47,8 @@ EOF
 
 $CC -B. -o $t/exe $t/a.o $t/b.o
 
-readelf -p .rodata.str1.1 $t/exe | grep -q Hello
-readelf -p .rodata.str4.4 $t/exe | grep -q world
-readelf -p .rodata.str1.1 $t/exe | grep -q foobar
-readelf -p .rodata.cst8 $t/exe | grep -q abcdefgh
-readelf -p .rodatabaz $t/exe | grep -q baz
+readelf -p .rodata.str1.1 $t/exe | grep Hello
+readelf -p .rodata.str4.4 $t/exe | grep world
+readelf -p .rodata.str1.1 $t/exe | grep foobar
+readelf -p .rodata.cst8 $t/exe | grep abcdefgh
+readelf -p .rodatabaz $t/exe | grep baz

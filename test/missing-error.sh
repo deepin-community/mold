@@ -9,6 +9,7 @@ int main() {
 }
 EOF
 
-! ./mold -o $t/exe $t/a.o 2> $t/log || false
-grep -q 'undefined symbol: foo' $t/log
-grep -q '>>> .*a\.o' $t/log
+not ./mold -o $t/exe $t/a.o 2> $t/log
+
+grep 'undefined symbol: foo' $t/log
+grep '>>> .*a\.o' $t/log

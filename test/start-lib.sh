@@ -15,5 +15,5 @@ EOF
 
 $CC -B. -o $t/exe -Wl,-start-lib $t/a.o -Wl,-end-lib $t/b.o $t/c.o
 nm $t/exe > $t/log
-! grep -q ' foo$' $t/log || false
-grep -q ' bar$' $t/log
+not grep ' foo$' $t/log
+grep ' bar$' $t/log

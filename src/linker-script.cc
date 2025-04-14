@@ -6,7 +6,6 @@
 #include "mold.h"
 
 #include <cctype>
-#include <iomanip>
 
 namespace mold {
 
@@ -125,8 +124,7 @@ Script<E>::read_output_format(std::span<std::string_view> tok) {
 
 template <typename E>
 static bool is_in_sysroot(Context<E> &ctx, std::string path) {
-  std::filesystem::path sysroot = to_abs_path(ctx.arg.sysroot);
-  std::string rel = to_abs_path(path).lexically_relative(sysroot).string();
+  std::string rel = std::filesystem::relative(path, ctx.arg.sysroot).string();
   return rel != "." && !rel.starts_with("../");
 }
 
@@ -141,7 +139,7 @@ MappedFile *Script<E>::resolve_path(std::string_view tok, bool check_target) {
 
     if (check_target) {
       std::string_view target = get_machine_type(ctx, rctx, mf);
-      if (!target.empty() && target != E::target_name) {
+      if (!target.empty() && target != E::name) {
         Warn(ctx) << path << ": skipping incompatible file: " << target
                   << " (e_machine " << (int)E::e_machine << ")";
         return nullptr;
@@ -241,9 +239,9 @@ std::string_view Script<E>::get_script_output_type() {
 
   if (tok.size() >= 3 && tok[0] == "OUTPUT_FORMAT" && tok[1] == "(") {
     if (tok[2] == "elf64-x86-64")
-      return X86_64::target_name;
+      return X86_64::name;
     if (tok[2] == "elf32-i386")
-      return I386::target_name;
+      return I386::name;
   }
 
   if (tok.size() >= 3 && (tok[0] == "INPUT" || tok[0] == "GROUP") &&
@@ -269,8 +267,8 @@ static bool read_label(std::span<std::string_view> &tok, std::string label) {
 template <typename E>
 std::span<std::string_view>
 Script<E>::read_version_script_commands(std::span<std::string_view> tok,
-                                     std::string_view ver_str, u16 ver_idx,
-                                     bool is_global, bool is_cpp) {
+                                        std::string_view ver_str, u16 ver_idx,
+                                        bool is_global, bool is_cpp) {
   while (!tok.empty() && tok[0] != "}") {
     if (read_label(tok, "global")) {
       is_global = true;
@@ -334,7 +332,7 @@ Script<E>::read_version_script(std::span<std::string_view> tok) {
     } else {
       ver_str = tok[0];
       ver_idx = next_ver++;
-      ctx.arg.version_definitions.push_back(std::string(tok[0]));
+      ctx.arg.version_definitions.emplace_back(tok[0]);
       tok = tok.subspan(1);
     }
 
@@ -360,8 +358,8 @@ void Script<E>::parse_version_script() {
 template <typename E>
 std::span<std::string_view>
 Script<E>::read_dynamic_list_commands(std::span<std::string_view> tok,
-                                   std::vector<DynamicPattern> &result,
-                                   bool is_cpp) {
+                                      std::vector<DynamicPattern> &result,
+                                      bool is_cpp) {
   while (!tok.empty() && tok[0] != "}") {
     if (tok[0] == "extern") {
       tok = tok.subspan(1);

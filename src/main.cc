@@ -1,17 +1,11 @@
 #include "mold.h"
-#include "filetype.h"
 #include "../lib/archive-file.h"
 
 #include <cstring>
 #include <functional>
-#include <iomanip>
-#include <map>
-#include <regex>
-#include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <tbb/global_control.h>
-#include <tbb/parallel_for_each.h>
 #include <unordered_set>
 
 #ifdef _WIN32
@@ -23,87 +17,12 @@
 
 #ifdef MOLD_X86_64
 int main(int argc, char **argv) {
+  mold::set_mimalloc_options();
   return mold::mold_main<mold::X86_64>(argc, argv);
 }
 #endif
 
 namespace mold {
-
-// Read the beginning of a given file and returns its machine type
-// (e.g. EM_X86_64 or EM_386).
-template <typename E>
-std::string_view
-get_machine_type(Context<E> &ctx, ReaderContext &rctx, MappedFile *mf) {
-  auto get_elf_type = [&](u8 *buf) -> std::string_view {
-    bool is_le = (((ElfEhdr<I386> *)buf)->e_ident[EI_DATA] == ELFDATA2LSB);
-    bool is_64;
-    u32 e_machine;
-
-    if (is_le) {
-      auto &ehdr = *(ElfEhdr<I386> *)buf;
-      is_64 = (ehdr.e_ident[EI_CLASS] == ELFCLASS64);
-      e_machine = ehdr.e_machine;
-    } else {
-      auto &ehdr = *(ElfEhdr<M68K> *)buf;
-      is_64 = (ehdr.e_ident[EI_CLASS] == ELFCLASS64);
-      e_machine = ehdr.e_machine;
-    }
-
-    switch (e_machine) {
-    case EM_386:
-      return I386::target_name;
-    case EM_X86_64:
-      return X86_64::target_name;
-    case EM_ARM:
-      return ARM32::target_name;
-    case EM_AARCH64:
-      return ARM64::target_name;
-    case EM_RISCV:
-      if (is_le)
-        return is_64 ? RV64LE::target_name : RV32LE::target_name;
-      return is_64 ? RV64BE::target_name : RV32BE::target_name;
-    case EM_PPC:
-      return PPC32::target_name;
-    case EM_PPC64:
-      return is_le ? PPC64V2::target_name : PPC64V1::target_name;
-    case EM_S390X:
-      return S390X::target_name;
-    case EM_SPARC64:
-      return SPARC64::target_name;
-    case EM_68K:
-      return M68K::target_name;
-    case EM_SH:
-      return SH4::target_name;
-    case EM_LOONGARCH:
-      return is_64 ? LOONGARCH64::target_name : LOONGARCH32::target_name;
-    default:
-      return "";
-    }
-  };
-
-  switch (get_file_type(ctx, mf)) {
-  case FileType::ELF_OBJ:
-  case FileType::ELF_DSO:
-  case FileType::GCC_LTO_OBJ:
-    return get_elf_type(mf->data);
-  case FileType::AR:
-    for (MappedFile *child : read_fat_archive_members(ctx, mf))
-      if (FileType ty = get_file_type(ctx, child);
-          ty == FileType::ELF_OBJ || ty == FileType::GCC_LTO_OBJ)
-        return get_elf_type(child->data);
-    return "";
-  case FileType::THIN_AR:
-    for (MappedFile *child : read_thin_archive_members(ctx, mf))
-      if (FileType ty = get_file_type(ctx, child);
-          ty == FileType::ELF_OBJ || ty == FileType::GCC_LTO_OBJ)
-        return get_elf_type(child->data);
-    return "";
-  case FileType::TEXT:
-    return Script(ctx, rctx, mf).get_script_output_type();
-  default:
-    return "";
-  }
-}
 
 template <typename E>
 static void
@@ -122,9 +41,12 @@ static ObjectFile<E> *new_object_file(Context<E> &ctx, ReaderContext &rctx,
 
   check_file_compatibility(ctx, rctx, mf);
 
-  bool in_lib = rctx.in_lib || (!archive_name.empty() && !rctx.whole_archive);
-  ObjectFile<E> *file = ObjectFile<E>::create(ctx, mf, archive_name, in_lib);
+  ObjectFile<E> *file = new ObjectFile<E>(ctx, mf, archive_name);
+  ctx.obj_pool.emplace_back(file);
   file->priority = ctx.file_priority++;
+  file->is_reachable =
+    !rctx.in_lib && (archive_name.empty() || rctx.whole_archive);
+
   rctx.tg->run([file, &ctx] { file->parse(ctx); });
   if (ctx.arg.trace)
     Out(ctx) << "trace: " << *file;
@@ -143,8 +65,9 @@ static ObjectFile<E> *new_lto_obj(Context<E> &ctx, ReaderContext &rctx,
   ObjectFile<E> *file = read_lto_object(ctx, mf);
   file->priority = ctx.file_priority++;
   file->archive_name = archive_name;
-  file->is_in_lib = rctx.in_lib || (!archive_name.empty() && !rctx.whole_archive);
-  file->is_alive = !file->is_in_lib;
+  file->is_reachable =
+    !rctx.in_lib && (archive_name.empty() || rctx.whole_archive);
+
   if (ctx.arg.trace)
     Out(ctx) << "trace: " << *file;
   return file;
@@ -155,9 +78,11 @@ static SharedFile<E> *
 new_shared_file(Context<E> &ctx, ReaderContext &rctx, MappedFile *mf) {
   check_file_compatibility(ctx, rctx, mf);
 
-  SharedFile<E> *file = SharedFile<E>::create(ctx, mf);
+  SharedFile<E> *file = new SharedFile<E>(ctx, mf);
+  ctx.dso_pool.emplace_back(file);
   file->priority = ctx.file_priority++;
-  file->is_alive = !rctx.as_needed;
+  file->is_reachable = !rctx.as_needed;
+
   rctx.tg->run([file, &ctx] { file->parse(ctx); });
   if (ctx.arg.trace)
     Out(ctx) << "trace: " << *file;
@@ -249,7 +174,7 @@ MappedFile *open_library(Context<E> &ctx, ReaderContext &rctx, std::string path)
     return nullptr;
 
   std::string_view target = get_machine_type(ctx, rctx, mf);
-  if (!target.empty() && target != E::target_name) {
+  if (!target.empty() && target != E::name) {
     Warn(ctx) << path << ": skipping incompatible file: " << target
               << " (e_machine " << (int)E::e_machine << ")";
     return nullptr;
@@ -340,7 +265,7 @@ static void read_input_files(Context<E> &ctx, std::span<std::string> args) {
 template <typename E>
 static bool has_lto_obj(Context<E> &ctx) {
   for (ObjectFile<E> *file : ctx.objs)
-    if (file->is_alive && (file->is_lto_obj || file->is_gcc_offload_obj))
+    if (file->is_reachable && (file->is_lto_obj || file->is_gcc_offload_obj))
       return true;
   return false;
 }
@@ -363,7 +288,7 @@ int mold_main(int argc, char **argv) {
 
   // Redo if -m is not x86-64.
   if constexpr (is_x86_64<E>)
-    if (ctx.arg.emulation != X86_64::target_name)
+    if (ctx.arg.emulation != X86_64::name)
       return redo_main(ctx, argc, argv);
 
   Timer t_all(ctx, "all");
@@ -428,8 +353,8 @@ int mold_main(int argc, char **argv) {
 
   // Now that we know which object files are to be included to the
   // final output, we can remove unnecessary files.
-  std::erase_if(ctx.objs, [](InputFile<E> *file) { return !file->is_alive; });
-  std::erase_if(ctx.dsos, [](InputFile<E> *file) { return !file->is_alive; });
+  std::erase_if(ctx.objs, [](InputFile<E> *file) { return !file->is_reachable; });
+  std::erase_if(ctx.dsos, [](InputFile<E> *file) { return !file->is_reachable; });
 
   // Parse .eh_frame section contents.
   parse_eh_frame_sections(ctx);
@@ -457,9 +382,17 @@ int mold_main(int argc, char **argv) {
   // Set is_imported and is_exported bits for each symbol.
   compute_import_export(ctx);
 
+  // Make sure that there's no duplicate symbol
+  if (!ctx.arg.allow_multiple_definition)
+    check_duplicate_symbols(ctx);
+
   // Set "address-taken" bits for input sections.
   if (ctx.arg.icf)
     compute_address_significance(ctx);
+
+  // Handle PPC64-specific .opd sections.
+  if constexpr (is_ppc64v1<E>)
+    ppc64v1_rewrite_opd(ctx);
 
   // Garbage-collect unreachable sections.
   if (ctx.arg.gc_sections)
@@ -472,18 +405,12 @@ int mold_main(int argc, char **argv) {
   // Create linker-synthesized sections such as .got or .plt.
   create_synthetic_sections(ctx);
 
-  // Make sure that there's no duplicate symbol
-  if (!ctx.arg.allow_multiple_definition)
-    check_duplicate_symbols(ctx);
-
+  // Handle --no-allow-shlib-undefined
   if (!ctx.arg.allow_shlib_undefined)
     check_shlib_undefined(ctx);
 
   // Warn if symbols with different types are defined under the same name.
   check_symbol_types(ctx);
-
-  if constexpr (is_ppc64v1<E>)
-    ppc64v1_rewrite_opd(ctx);
 
   // Bin input sections into output sections.
   create_output_sections(ctx);
@@ -661,6 +588,10 @@ int mold_main(int argc, char **argv) {
 
   // At this point, both memory and file layouts are fixed.
 
+  // Gather thunk symbols and attach them to themselves.
+  if constexpr (needs_thunk<E>)
+    gather_thunk_addresses(ctx);
+
   t_before_copy.stop();
 
   // Create an output file
@@ -678,19 +609,19 @@ int mold_main(int argc, char **argv) {
 
   // Dynamic linker works better with sorted .rela.dyn section,
   // so we sort them.
-  ctx.reldyn->sort(ctx);
-
-  // .note.gnu.build-id section contains a cryptographic hash of the
-  // entire output file. Now that we wrote everything except build-id,
-  // we can compute it.
-  if (ctx.buildid)
-    write_build_id(ctx);
+  sort_reldyn(ctx);
 
   // .gdb_index's contents cannot be constructed before applying
   // relocations to other debug sections. We have relocated debug
   // sections now, so write the .gdb_index section.
   if (ctx.gdb_index && ctx.arg.separate_debug_file.empty())
     write_gdb_index(ctx);
+
+  // .note.gnu.build-id section contains a cryptographic hash of the
+  // entire output file. Now that we wrote everything except build-id,
+  // we can compute it.
+  if (ctx.buildid)
+    write_build_id(ctx);
 
   if (!ctx.arg.separate_debug_file.empty())
     write_gnu_debuglink(ctx);

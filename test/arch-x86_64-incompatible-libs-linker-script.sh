@@ -1,7 +1,7 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
-echo 'int main() {}' | $CC -m32 -o $t/exe -xc - >& /dev/null || skip
+test_cflags -m32 || skip
 
 mkdir -p $t/foo
 
@@ -23,7 +23,7 @@ EOF
 cd $t
 
 $CC -B$OLDPWD -o exe1 -Lfoo a.o b.script
-LD_LIBRARY_PATH=. $QEMU ./exe1 | grep -q 'Hello world'
+LD_LIBRARY_PATH=. $QEMU ./exe1 | grep 'Hello world'
 
 $CC -B$OLDPWD -o exe2 -Lfoo b.script a.o
-LD_LIBRARY_PATH=. $QEMU ./exe2 | grep -q 'Hello world'
+LD_LIBRARY_PATH=. $QEMU ./exe2 | grep 'Hello world'

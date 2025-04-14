@@ -1,8 +1,8 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
-nm mold | grep -q '__tsan_init' && skip
-echo 'int main() {}' | $CC -m32 -o $t/exe -xc - >& /dev/null || skip
+nm mold | grep '__tsan_init' && skip
+test_cflags -m32 || skip
 
 mkdir -p $t/foo
 

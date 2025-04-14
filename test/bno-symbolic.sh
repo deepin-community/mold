@@ -3,7 +3,7 @@
 
 # GCC produces buggy code for this test case on s390x.
 # https://sourceware.org/bugzilla/show_bug.cgi?id=29655
-[ $MACHINE = s390x ] && $CC -v 2>&1 | grep -E '^gcc version 1[0-4]\.' && skip
+[ $MACHINE = s390x ] && $CC -v |& grep -E '^gcc version 1[0-5]\.' && skip
 
 cat <<EOF | $CC -c -fPIC -o$t/a.o -xc -
 int foo = 4;
@@ -33,4 +33,4 @@ int main() {
 EOF
 
 $CC -B. -no-pie -o $t/exe $t/c.o $t/b.so
-$QEMU $t/exe | grep -q '3 3 1'
+$QEMU $t/exe | grep '3 3 1'

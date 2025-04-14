@@ -9,11 +9,11 @@ EOF
 $CC -B. -shared -o $t/b.so $t/a.o
 $CC -B. -shared -o $t/b.so $t/a.o -Wl,-z,undefs
 
-! $CC -B. -shared -o $t/b.so $t/a.o -Wl,-z,defs 2> $t/log || false
-grep -q 'undefined symbol:.* foo' $t/log
+not $CC -B. -shared -o $t/b.so $t/a.o -Wl,-z,defs |&
+  grep 'undefined symbol:.* foo'
 
-! $CC -B. -shared -o $t/b.so $t/a.o -Wl,-no-undefined 2> $t/log || false
-grep -q 'undefined symbol:.* foo' $t/log
+not $CC -B. -shared -o $t/b.so $t/a.o -Wl,-no-undefined |&
+  grep 'undefined symbol:.* foo'
 
-$CC -B. -shared -o $t/c.so $t/a.o -Wl,-z,defs -Wl,--warn-unresolved-symbols 2> $t/log
-grep -q 'undefined symbol:.* foo$' $t/log
+$CC -B. -shared -o $t/c.so $t/a.o -Wl,-z,defs -Wl,--warn-unresolved-symbols |&
+  grep 'undefined symbol:.* foo$'

@@ -53,6 +53,15 @@ std::string rel_to_string<X86_64>(u32 r_type) {
   CASE(R_X86_64_IRELATIVE);
   CASE(R_X86_64_GOTPCRELX);
   CASE(R_X86_64_REX_GOTPCRELX);
+  CASE(R_X86_64_CODE_4_GOTPCRELX);
+  CASE(R_X86_64_CODE_4_GOTTPOFF);
+  CASE(R_X86_64_CODE_4_GOTPC32_TLSDESC);
+  CASE(R_X86_64_CODE_5_GOTPCRELX);
+  CASE(R_X86_64_CODE_5_GOTTPOFF);
+  CASE(R_X86_64_CODE_5_GOTPC32_TLSDESC);
+  CASE(R_X86_64_CODE_6_GOTPCRELX);
+  CASE(R_X86_64_CODE_6_GOTTPOFF);
+  CASE(R_X86_64_CODE_6_GOTPC32_TLSDESC);
   }
   return unknown_type(r_type);
 }
@@ -107,7 +116,7 @@ std::string rel_to_string<I386>(u32 r_type) {
 }
 
 template <>
-std::string rel_to_string<ARM64>(u32 r_type) {
+std::string rel_to_string<ARM64LE>(u32 r_type) {
   switch (r_type) {
   CASE(R_AARCH64_NONE);
   CASE(R_AARCH64_ABS64);
@@ -215,6 +224,11 @@ std::string rel_to_string<ARM64>(u32 r_type) {
   CASE(R_AARCH64_IRELATIVE);
   }
   return unknown_type(r_type);
+}
+
+template <>
+std::string rel_to_string<ARM64BE>(u32 r_type) {
+  return rel_to_string<ARM64LE>(r_type);
 }
 
 template <>
@@ -402,7 +416,6 @@ std::string rel_to_string<RV64LE>(u32 r_type) {
   CASE(R_RISCV_ALIGN);
   CASE(R_RISCV_RVC_BRANCH);
   CASE(R_RISCV_RVC_JUMP);
-  CASE(R_RISCV_RVC_LUI);
   CASE(R_RISCV_RELAX);
   CASE(R_RISCV_SUB6);
   CASE(R_RISCV_SET6);
@@ -615,6 +628,7 @@ std::string rel_to_string<PPC64V1>(u32 r_type) {
   CASE(R_PPC64_DTPREL16_HIGH);
   CASE(R_PPC64_DTPREL16_HIGHA);
   CASE(R_PPC64_REL24_NOTOC);
+  CASE(R_PPC64_ENTRY);
   CASE(R_PPC64_PLTSEQ);
   CASE(R_PPC64_PLTCALL);
   CASE(R_PPC64_PLTSEQ_NOTOC);
@@ -857,7 +871,7 @@ std::string rel_to_string<M68K>(u32 r_type) {
 }
 
 template <>
-std::string rel_to_string<SH4>(u32 r_type) {
+std::string rel_to_string<SH4LE>(u32 r_type) {
   switch (r_type) {
   CASE(R_SH_NONE);
   CASE(R_SH_DIR32);
@@ -888,6 +902,11 @@ std::string rel_to_string<SH4>(u32 r_type) {
   CASE(R_SH_GOTPLT32);
   }
   return unknown_type(r_type);
+}
+
+template <>
+std::string rel_to_string<SH4BE>(u32 r_type) {
+  return rel_to_string<SH4LE>(r_type);
 }
 
 template <>

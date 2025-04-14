@@ -1,5 +1,6 @@
 #pragma once
 
+#include "config.h"
 #include "integers.h"
 
 #include <array>
@@ -70,7 +71,6 @@ inline u8 *output_buffer_end = nullptr;
 extern std::string mold_git_hash;
 
 std::string errno_string();
-std::string get_self_path();
 void cleanup();
 void install_signal_handler();
 
@@ -251,6 +251,12 @@ struct Atomic : std::atomic<T> {
 };
 
 //
+// mimalloc.cc
+//
+
+void set_mimalloc_options();
+
+//
 // perf.cc
 //
 
@@ -312,7 +318,7 @@ class Timer {
 public:
   Timer(Context &ctx, std::string name, Timer *parent = nullptr) {
     record = new TimerRecord(name, parent ? parent->record : nullptr);
-    ctx.timer_records.push_back(std::unique_ptr<TimerRecord>(record));
+    ctx.timer_records.emplace_back(record);
   }
 
   Timer(const Timer &) = delete;
@@ -327,23 +333,6 @@ public:
 
 private:
   TimerRecord *record;
-};
-
-//
-// Bit vector
-//
-
-class BitVector {
-public:
-  BitVector() = default;
-  BitVector(u32 size) : vec((size + 7) / 8) {}
-
-  void resize(u32 size) { vec.resize((size + 7) / 8); }
-  bool get(u32 idx) const { return vec[idx / 8] & (1 << (idx % 8)); }
-  void set(u32 idx) { vec[idx / 8] |= 1 << (idx % 8); }
-
-private:
-  std::vector<u8> vec;
 };
 
 //
@@ -383,8 +372,14 @@ inline u64 bits(u64 val, u64 hi, u64 lo) {
   return (val >> lo) & ((1LL << (hi - lo + 1)) - 1);
 }
 
-inline i64 sign_extend(u64 val, i64 size) {
-  return (i64)(val << (63 - size)) >> (63 - size);
+// Cast val to a signed N bit integer.
+// For example, sign_extend(x, 32) == (i32)x for any integer x.
+inline i64 sign_extend(u64 val, i64 n) {
+  return (i64)(val << (64 - n)) >> (64 - n);
+}
+
+inline bool is_int(u64 val, i64 n) {
+  return sign_extend(val, n) == val;
 }
 
 template <typename T, typename Compare = std::less<T>>
@@ -589,14 +584,14 @@ public:
 #endif
   }
 
-  std::pair<T *, bool> insert(std::string_view key, u32 hash, const T &val) {
+  std::pair<T *, bool> insert(std::string_view key, u64 hash, const T &val) {
     assert(has_single_bit(nbuckets));
 
-    i64 begin = hash & (nbuckets - 1);
+    u64 begin = hash & (nbuckets - 1);
     u64 mask = nbuckets / NUM_SHARDS - 1;
 
     for (i64 i = 0; i < MAX_RETRY; i++) {
-      i64 idx = (begin & ~mask) | ((begin + i) & mask);
+      u64 idx = (begin & ~mask) | ((begin + i) & mask);
       Entry &ent = entries[idx];
 
       // It seems avoiding compare-and-swap is faster overall at least
@@ -634,8 +629,8 @@ public:
         return {&ent.value, false};
     }
 
-    assert(false && "ConcurrentMap is full");
-    return {nullptr, false};
+    std::cerr << "ConcurrentMap is full\n";
+    abort();
   }
 
   i64 get_idx(T *value) const {
@@ -693,12 +688,12 @@ public:
     return flatten(vec);
   }
 
-  static constexpr i64 MIN_NBUCKETS = 2048;
+  static constexpr i64 MIN_NBUCKETS = 4096;
   static constexpr i64 NUM_SHARDS = 16;
-  static constexpr i64 MAX_RETRY = 128;
+  static constexpr i64 MAX_RETRY = 256;
 
   Entry *entries = nullptr;
-  i64 nbuckets = 0;
+  u64 nbuckets = 0;
 };
 
 //
@@ -790,13 +785,19 @@ private:
 // filepath.cc
 //
 
-std::filesystem::path filepath(const auto &path) {
-  return {path, std::filesystem::path::format::generic_format};
+inline std::filesystem::path path_dirname(std::string_view path) {
+  return std::filesystem::path(path).parent_path();
 }
 
-std::string get_realpath(std::string_view path);
-std::string path_clean(std::string_view path);
-std::filesystem::path to_abs_path(std::filesystem::path path);
+inline std::string path_filename(std::string_view path) {
+  return std::filesystem::path(path).filename().string();
+}
+
+inline std::string path_clean(std::string_view path) {
+  return std::filesystem::path(path).lexically_normal().string();
+}
+
+std::string get_self_path();
 
 //
 // demangle.cc
@@ -894,7 +895,7 @@ public:
     mf->size = size;
     mf->parent = this;
 
-    ctx.mf_pool.push_back(std::unique_ptr<MappedFile>(mf));
+    ctx.mf_pool.emplace_back(mf);
     return mf;
   }
 
@@ -953,7 +954,7 @@ MappedFile *open_file(Context &ctx, std::string path) {
     Fatal(ctx) << error;
 
   if (mf)
-    ctx.mf_pool.push_back(std::unique_ptr<MappedFile>(mf));
+    ctx.mf_pool.emplace_back(mf);
   return mf;
 }
 

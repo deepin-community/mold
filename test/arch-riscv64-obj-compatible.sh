@@ -18,5 +18,5 @@ int main() {
 }
 EOF
 
-! $CC -B. -o $t/exe $t/a.o $t/b.o 2> $t/log || false
-grep -q 'cannot link object files with different floating-point ABI' $t/log
+not $CC -B. -o $t/exe $t/a.o $t/b.o |&
+  grep 'cannot link object files with different floating-point ABI'

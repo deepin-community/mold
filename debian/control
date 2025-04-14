@@ -9,7 +9,7 @@ Build-Depends:
  libmimalloc-dev,
  libssl-dev,
  libxxhash-dev,
- pkg-config,
+ pkgconf,
  zlib1g-dev,
  gdb
 Standards-Version: 4.6.0

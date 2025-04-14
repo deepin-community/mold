@@ -1,7 +1,7 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
-echo 'int foo() { return 0; }' | $CC -o /dev/null -c -xc - -mthumb 2> /dev/null || skip
+test_cflags -mthumb || skip
 
 cat <<EOF | $CC -o $t/a.o -c -xc - -mthumb
 #include <stdio.h>
@@ -27,4 +27,4 @@ int main() {
 EOF
 
 $CC -B. -o $t/exe $t/a.o $t/b.o
-$QEMU $t/exe | grep -q 'main foo bar'
+$QEMU $t/exe | grep 'main foo bar'

@@ -194,8 +194,8 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       break;
     case R_PPC64_REL24: {
       i64 val = sym.get_addr(ctx, NO_OPD) + A - P;
-      if (sym.has_plt(ctx) || sign_extend(val, 25) != val)
-        val = get_thunk_addr(i) + A - P;
+      if (sym.has_plt(ctx) || !is_int(val, 26))
+        val = sym.get_thunk_addr(ctx, P) + A - P;
 
       check(val, -(1 << 25), 1 << 25);
       *(ub32 *)loc |= bits(val, 25, 2) << 2;
@@ -507,12 +507,13 @@ get_relocation_at(Context<E> &ctx, InputSection<E> &isec, i64 offset) {
   return &*it;
 }
 
+namespace {
 struct OpdSymbol {
   bool operator<(const OpdSymbol &x) const { return r_offset < x.r_offset; }
-
   u64 r_offset = 0;
   Symbol<E> *sym = nullptr;
 };
+}
 
 static Symbol<E> *
 get_opd_sym_at(std::span<OpdSymbol> syms, u64 offset) {
@@ -589,7 +590,7 @@ void ppc64v1_rewrite_opd(Context<E> &ctx) {
 
       Symbol<E> *sym2 = file->symbols[rel->r_sym];
       if (sym2->get_type() != STT_SECTION)
-        Fatal(ctx) << *file << ": bad relocation in .opd referring " << *sym2;
+        Fatal(ctx) << *file << ": bad relocation in .opd referring to " << *sym2;
 
       opd_syms.push_back({sym->value, sym});
 

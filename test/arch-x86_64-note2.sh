@@ -28,5 +28,4 @@ EOF
 
 ./mold -o $t/exe $t/a.o $t/b.o $t/c.o $t/d.o
 
-readelf --segments $t/exe > $t/log
-grep -Fq '01     .note.a .note.b .note.c' $t/log
+readelf --segments $t/exe | grep -F '01     .note.a .note.c .note.b'

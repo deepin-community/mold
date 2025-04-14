@@ -1,6 +1,8 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
+[ $MACHINE = sh4aeb ] && skip
+
 cat <<EOF | $CXX -o $t/a.o -c -xc++ -
 #include <iostream>
 #include <stdexcept>
@@ -24,4 +26,4 @@ int main() {
 EOF
 
 $CXX -B. -o $t/exe $t/a.o
-$QEMU $t/exe | grep -q 'error: exception'
+$QEMU $t/exe | grep 'error: exception'

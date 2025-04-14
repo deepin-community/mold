@@ -95,7 +95,7 @@ InputFile<E>::InputFile(Context<E> &ctx, MappedFile *mf)
 
 template <typename E>
 std::span<ElfPhdr<E>> InputFile<E>::get_phdrs() {
-  ElfEhdr<E> &ehdr = get_ehdr();
+  ElfEhdr<E> &ehdr = *(ElfEhdr<E> *)mf->data;
   return {(ElfPhdr<E> *)(mf->data + ehdr.e_phoff), ehdr.e_phnum};
 }
 
@@ -114,22 +114,6 @@ std::string_view InputFile<E>::get_source_name() const {
     if (Symbol<E> *sym = symbols[i]; sym->get_type() == STT_FILE)
       return sym->name();
   return "";
-}
-
-template <typename E>
-ObjectFile<E>::ObjectFile(Context<E> &ctx, MappedFile *mf,
-                          std::string archive_name, bool is_in_lib)
-  : InputFile<E>(ctx, mf), archive_name(archive_name), is_in_lib(is_in_lib) {
-  this->is_alive = !is_in_lib;
-}
-
-template <typename E>
-ObjectFile<E> *
-ObjectFile<E>::create(Context<E> &ctx, MappedFile *mf,
-                      std::string archive_name, bool is_in_lib) {
-  ObjectFile<E> *obj = new ObjectFile<E>(ctx, mf, archive_name, is_in_lib);
-  ctx.obj_pool.emplace_back(obj);
-  return obj;
 }
 
 template <typename E>
@@ -177,7 +161,7 @@ ObjectFile<E>::parse_note_gnu_property(Context<E> &ctx, const ElfShdr<E> &shdr) 
 
 // <format-version>
 // [ <section-length> "vendor-name" <file-tag> <size> <attribute>*]+ ]*
-template <typename E>
+template <is_riscv E>
 static void read_riscv_attributes(Context<E> &ctx, ObjectFile<E> &file,
                                   std::string_view data) {
   if (data.empty())
@@ -369,6 +353,10 @@ void ObjectFile<E>::initialize_sections(Context<E> &ctx) {
           is_debug_section(shdr, name))
         continue;
 
+      // Ignore section is specified by --discard-section.
+      if (ctx.arg.discard_section.contains(name))
+        continue;
+
       if (name == ".comment" &&
           this->get_string(ctx, shdr).starts_with("rustc "))
         this->is_rust_obj = true;
@@ -460,6 +448,13 @@ void ObjectFile<E>::initialize_sections(Context<E> &ctx) {
       target->relsec_idx = i;
     }
   }
+
+  // Attach .arm.exidx sections to their corresponding sections
+  if constexpr (is_arm32<E>)
+    for (std::unique_ptr<InputSection<E>> &isec : this->sections)
+      if (isec && isec->shdr().sh_type == SHT_ARM_EXIDX)
+        if (InputSection<E> *target = sections[isec->shdr().sh_link].get())
+          target->extra.exidx = isec.get();
 }
 
 // .eh_frame contains data records explaining how to handle exceptions.
@@ -637,7 +632,7 @@ void ObjectFile<E>::initialize_symbols(Context<E> &ctx) {
       if (ver != "@" && ver != "@@") {
         if (ver.starts_with("@@"))
           key = name;
-        has_symver.set(i - this->first_global);
+        has_symver[i - this->first_global] = true;
       }
     }
 
@@ -665,7 +660,7 @@ void ObjectFile<E>::initialize_symbols(Context<E> &ctx) {
 template <typename E>
 void ObjectFile<E>::sort_relocations(Context<E> &ctx) {
   if constexpr (is_riscv<E> || is_loongarch<E>) {
-    auto less = [&](const ElfRel<E> &a, const ElfRel<E> &b) {
+    auto less = [](const ElfRel<E> &a, const ElfRel<E> &b) {
       return a.r_offset < b.r_offset;
     };
 
@@ -853,6 +848,16 @@ void ObjectFile<E>::parse(Context<E> &ctx) {
   initialize_sections(ctx);
   initialize_symbols(ctx);
   sort_relocations(ctx);
+
+  // R_ARM_TARGET1 is typically used for entries in .init_array and may
+  // be interpreted as REL32 or ABS32 depending on the target.
+  // All targets we support handle it as if it were a ABS32.
+  if constexpr (is_arm32<E>)
+    for (std::unique_ptr<InputSection<E>> &isec : sections)
+      if (isec && isec->is_alive)
+        for (ElfRel<E> &r : isec->get_rels(ctx))
+          if (r.r_type == R_ARM_TARGET1)
+            r.r_type = R_ARM_ABS32;
 }
 
 // Symbols with higher priorities overwrites symbols with lower priorities.
@@ -890,7 +895,7 @@ template <typename E>
 static u64 get_rank(const Symbol<E> &sym) {
   if (!sym.file)
     return 7 << 24;
-  return get_rank(sym.file, sym.esym(), !sym.file->is_alive);
+  return get_rank(sym.file, sym.esym(), !sym.file->is_reachable);
 }
 
 // Symbol's visibility is set to the most restrictive one. For example,
@@ -950,7 +955,7 @@ void ObjectFile<E>::resolve_symbols(Context<E> &ctx) {
     }
 
     std::scoped_lock lock(sym.mu);
-    if (get_rank(this, esym, !this->is_alive) < get_rank(sym)) {
+    if (get_rank(this, esym, !this->is_reachable) < get_rank(sym)) {
       sym.file = this;
       sym.set_input_section(isec);
       sym.value = esym.st_value;
@@ -965,7 +970,7 @@ template <typename E>
 void
 ObjectFile<E>::mark_live_objects(Context<E> &ctx,
                                  std::function<void(InputFile<E> *)> feeder) {
-  assert(this->is_alive);
+  assert(this->is_reachable);
 
   for (i64 i = this->first_global; i < this->elf_syms.size(); i++) {
     const ElfSym<E> &esym = this->elf_syms[i];
@@ -983,7 +988,7 @@ ObjectFile<E>::mark_live_objects(Context<E> &ctx,
       bool undef_ref = esym.is_undef() && (!esym.is_weak() || sym.file->is_dso);
       bool common_ref = esym.is_common() && !sym.esym().is_common();
 
-      if ((undef_ref || common_ref) && !sym.file->is_alive.test_and_set()) {
+      if ((undef_ref || common_ref) && !sym.file->is_reachable.test_and_set()) {
         feeder(sym.file);
         if (sym.is_traced)
           Out(ctx) << "trace-symbol: " << *this << " keeps " << *sym.file
@@ -1089,7 +1094,7 @@ static bool should_write_to_local_symtab(Context<E> &ctx, Symbol<E> &sym) {
   // merged, so their origins shouldn't matter, but I don't really
   // know the rationale. Anyway, this is the behavior of the
   // traditional linkers.
-  if (sym.name().starts_with(".L")) {
+  if (sym.name().starts_with(".L") || sym.name() == "L0\001") {
     if (ctx.arg.discard_locals)
       return false;
 
@@ -1105,7 +1110,7 @@ template <typename E>
 void ObjectFile<E>::compute_symtab_size(Context<E> &ctx) {
   this->output_sym_indices.resize(this->elf_syms.size(), -1);
 
-  auto is_alive = [&](Symbol<E> &sym) -> bool {
+  auto is_alive = [](Symbol<E> &sym) -> bool {
     if (SectionFragment<E> *frag = sym.get_frag())
       return frag->is_alive;
     if (InputSection<E> *isec = sym.get_input_section())
@@ -1160,21 +1165,17 @@ void ObjectFile<E>::populate_symtab(Context<E> &ctx) {
     strtab_off += write_string(strtab_base + strtab_off, sym.name());
   };
 
-  i64 local_symtab_idx = this->local_symtab_idx;
-  i64 global_symtab_idx = this->global_symtab_idx;
+  i64 local_idx = this->local_symtab_idx;
+  i64 global_idx = this->global_symtab_idx;
 
   for (i64 i = 1; i < this->first_global; i++)
     if (Symbol<E> &sym = *this->symbols[i]; sym.write_to_symtab)
-      write_sym(sym, local_symtab_idx++);
+      write_sym(sym, local_idx++);
 
   for (i64 i = this->first_global; i < this->elf_syms.size(); i++) {
     Symbol<E> &sym = *this->symbols[i];
-    if (sym.file == this && sym.write_to_symtab) {
-      if (sym.is_local(ctx))
-        write_sym(sym, local_symtab_idx++);
-      else
-        write_sym(sym, global_symtab_idx++);
-    }
+    if (sym.file == this && sym.write_to_symtab)
+      write_sym(sym, sym.is_local(ctx) ? local_idx++ : global_idx++);
   }
 }
 
@@ -1194,13 +1195,6 @@ std::ostream &operator<<(std::ostream &out, const InputFile<E> &file) {
 }
 
 template <typename E>
-SharedFile<E> *SharedFile<E>::create(Context<E> &ctx, MappedFile *mf) {
-  SharedFile<E> *obj = new SharedFile(ctx, mf);
-  ctx.dso_pool.emplace_back(obj);
-  return obj;
-}
-
-template <typename E>
 std::string SharedFile<E>::get_soname(Context<E> &ctx) {
   if (ElfShdr<E> *sec = this->find_section(SHT_DYNAMIC))
     for (ElfDyn<E> &dyn : this->template get_data<ElfDyn<E>>(ctx, *sec))
@@ -1210,7 +1204,7 @@ std::string SharedFile<E>::get_soname(Context<E> &ctx) {
   if (this->mf->given_fullpath)
     return this->filename;
 
-  return filepath(this->filename).filename().string();
+  return path_filename(this->filename);
 }
 
 template <typename E>
@@ -1265,26 +1259,26 @@ void SharedFile<E>::parse(Context<E> &ctx) {
 template <typename E>
 std::vector<std::string_view> SharedFile<E>::get_dt_needed(Context<E> &ctx) {
   // Get the contents of the dynamic segment
-  std::span<Word<E>> dynamic;
+  std::span<ElfDyn<E>> dynamic;
   for (ElfPhdr<E> &phdr : this->get_phdrs())
     if (phdr.p_type == PT_DYNAMIC)
-      dynamic = {(Word<E> *)(this->mf->data + phdr.p_offset),
-                 (size_t)phdr.p_memsz / sizeof(Word<E>)};
+      dynamic = {(ElfDyn<E> *)(this->mf->data + phdr.p_offset),
+                 (size_t)phdr.p_memsz / sizeof(ElfDyn<E>)};
 
   // Find a string table
   char *strtab = nullptr;
-  for (i64 i = 0; i < dynamic.size(); i += 2)
-    if (dynamic[i] == DT_STRTAB)
-      strtab = (char *)this->mf->data + dynamic[i + 1];
+  for (ElfDyn<E> &dyn : dynamic)
+    if (dyn.d_tag == DT_STRTAB)
+      strtab = (char *)this->mf->data + dyn.d_val;
 
   if (!strtab)
     return {};
 
   // Find all DT_NEEDED entries
   std::vector<std::string_view> vec;
-  for (i64 i = 0; i < dynamic.size(); i += 2)
-    if (dynamic[i] == DT_NEEDED)
-      vec.push_back(strtab + dynamic[i + 1]);
+  for (ElfDyn<E> &dyn : dynamic)
+    if (dyn.d_tag == DT_NEEDED)
+      vec.push_back(strtab + dyn.d_val);
   return vec;
 }
 
@@ -1380,8 +1374,11 @@ SharedFile<E>::mark_live_objects(Context<E> &ctx,
     if (sym.is_traced)
       print_trace_symbol(ctx, *this, esym, sym);
 
+    // We follow undefined symbols in a DSO only to handle
+    // --no-allow-shlib-undefined.
     if (esym.is_undef() && !esym.is_weak() && sym.file &&
-        !sym.file->is_alive.test_and_set()) {
+        (!sym.file->is_dso || !ctx.arg.allow_shlib_undefined) &&
+        !sym.file->is_reachable.test_and_set()) {
       feeder(sym.file);
 
       if (sym.is_traced)
@@ -1409,7 +1406,7 @@ std::span<Symbol<E> *> SharedFile<E>::get_symbols_at(Symbol<E> *sym) {
   });
 
   auto [begin, end] = std::equal_range(sorted_syms.begin(), sorted_syms.end(),
-                                       sym, [&](Symbol<E> *a, Symbol<E> *b) {
+                                       sym, [](Symbol<E> *a, Symbol<E> *b) {
     return a->esym().st_value < b->esym().st_value;
   });
 

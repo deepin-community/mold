@@ -1,9 +1,29 @@
-mold (2.34.1+dfsg-1) unstable; urgency=medium
+mold (2.37.1+dfsg-1) unstable; urgency=medium
 
   * New upstream release
-  * Cherry pick fix for https://github.com/rui314/mold/issues/1342
 
- -- Sylvestre Ledru <sylvestre@debian.org>  Tue, 08 Oct 2024 17:54:15 +0200
+ -- Sylvestre Ledru <sylvestre@debian.org>  Mon, 24 Mar 2025 11:07:24 +0100
+
+mold (2.36.0+dfsg-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Sylvestre Ledru <sylvestre@debian.org>  Thu, 09 Jan 2025 09:09:54 +0100
+
+mold (2.35.1+dfsg-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Sylvestre Ledru <sylvestre@debian.org>  Sun, 22 Dec 2024 12:59:01 +0100
+
+mold (2.35.0+dfsg-1) unstable; urgency=medium
+
+  * New upstream release
+  * Disable dwz in the packaging step
+  * Fix
+    build-depends-on-obsolete-package Build-Depends: pkg-config => pkgconf
+
+ -- Sylvestre Ledru <sylvestre@debian.org>  Sun, 08 Dec 2024 10:16:43 +0100
 
 mold (2.34.0+dfsg-1) unstable; urgency=medium
 
