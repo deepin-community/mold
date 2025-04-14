@@ -201,8 +201,8 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
     u64 GOT = ctx.got->shdr.sh_addr;
     u64 TOC = ctx.extra.TOC->value;
 
-    auto r2save_thunk_addr = [&] { return get_thunk_addr(i); };
-    auto no_r2save_thunk_addr = [&] { return get_thunk_addr(i) + 8; };
+    auto r2save_thunk_addr = [&] { return sym.get_thunk_addr(ctx, P); };
+    auto no_r2save_thunk_addr = [&] { return sym.get_thunk_addr(ctx, P) + 8; };
 
     switch (rel.r_type) {
     case R_PPC64_TOC16_HA:
@@ -227,7 +227,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
           *(ul32 *)(loc + 4) = 0xe841'0018; // ld r2, 24(r1)
       } else {
         i64 val = S + get_local_entry_offset(ctx, sym) + A - P;
-        if (sign_extend(val, 25) != val)
+        if (!is_int(val, 26))
           val = no_r2save_thunk_addr() + A - P;
         *(ul32 *)loc |= bits(val, 25, 2) << 2;
       }
@@ -238,7 +238,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
         *(ul32 *)loc |= bits(val, 25, 2) << 2;
       } else {
         i64 val = S + A - P;
-        if (sign_extend(val, 25) != val)
+        if (!is_int(val, 26))
           val = no_r2save_thunk_addr() + A - P;
         *(ul32 *)loc |= bits(val, 25, 2) << 2;
       }
@@ -334,6 +334,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
     case R_PPC64_TLS:
     case R_PPC64_TLSGD:
     case R_PPC64_TLSLD:
+    case R_PPC64_ENTRY:
       break;
     default:
       unreachable();
@@ -467,6 +468,7 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_PPC64_DTPREL16_LO:
     case R_PPC64_DTPREL16_LO_DS:
     case R_PPC64_DTPREL34:
+    case R_PPC64_ENTRY:
       break;
     default:
       Error(ctx) << *this << ": unknown relocation: " << rel;

@@ -9,5 +9,5 @@ EOF
 $CC -B. -shared -o $t/b.so $t/a.o
 
 readelf -W --dyn-syms $t/b.so > $t/log
-! grep -qw foo $t/log || false
-grep -qw bar $t/log
+not grep -w foo $t/log
+grep -w bar $t/log

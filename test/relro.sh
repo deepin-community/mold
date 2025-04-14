@@ -9,16 +9,13 @@ int main() {
 EOF
 
 $CC -B. -o $t/exe1 $t/a.o -Wl,-z,relro,-z,lazy
-$QEMU $t/exe1 | grep -q 'Hello world'
-readelf --segments -W $t/exe1 > $t/log1
-grep -q 'GNU_RELRO ' $t/log1
+$QEMU $t/exe1 | grep 'Hello world'
+readelf --segments -W $t/exe1 | grep -w GNU_RELRO
 
 $CC -B. -o $t/exe2 $t/a.o -Wl,-z,relro,-z,now
-$QEMU $t/exe2 | grep -q 'Hello world'
-readelf --segments -W $t/exe2 > $t/log2
-grep -q 'GNU_RELRO ' $t/log2
+$QEMU $t/exe2 | grep 'Hello world'
+readelf --segments -W $t/exe2 | grep -w GNU_RELRO
 
 $CC -B. -o $t/exe3 $t/a.o -Wl,-z,norelro
-$QEMU $t/exe3 | grep -q 'Hello world'
-readelf --segments -W $t/exe3 > $t/log3
-! grep -q 'GNU_RELRO ' $t/log3 || false
+$QEMU $t/exe3 | grep 'Hello world'
+readelf --segments -W $t/exe3 | not grep -w GNU_RELRO

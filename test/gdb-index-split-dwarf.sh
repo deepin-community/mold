@@ -3,9 +3,7 @@
 
 on_qemu && skip
 [ $MACHINE = riscv64 -o $MACHINE = riscv32 -o $MACHINE = sparc64 ] && skip
-
 command -v gdb >& /dev/null || skip
-
 test_cflags -gdwarf-5 -g || skip
 
 cat <<EOF > $t/a.c
@@ -64,7 +62,7 @@ $CC -c -o $t/c.o $t/c.c -fPIC -g -ggnu-pubnames -gdwarf-5
 $CC -c -o $t/d.o $t/d.c -fPIC -g -ggnu-pubnames -gdwarf-5 -gsplit-dwarf
 
 $CC -B. -shared -o $t/e.so $t/a.o $t/b.o $t/c.o $t/d.o -Wl,--gdb-index
-readelf -WS $t/e.so 2> /dev/null | grep -Fq .gdb_index
+readelf -WS $t/e.so 2> /dev/null | grep -F .gdb_index
 
 cat <<EOF | $CC -c -o $t/f.o -fPIC -g -ggnu-pubnames -gdwarf-5 -gsplit-dwarf -xc - -gz
 void fn1();
@@ -75,6 +73,6 @@ int main() {
 EOF
 
 $CC -B. -o $t/exe $t/e.so $t/f.o -Wl,--gdb-index
-readelf -WS $t/exe 2> /dev/null | grep -Fq .gdb_index
+readelf -WS $t/exe 2> /dev/null | grep -F .gdb_index
 
-$QEMU $t/exe | grep -q 'Hello world'
+$QEMU $t/exe | grep 'Hello world'

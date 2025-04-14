@@ -88,7 +88,7 @@ void write_plt_header(Context<E> &ctx, u8 *buf) {
   loc[5] |= lo(ctx.gotplt->shdr.sh_addr - ctx.plt->shdr.sh_addr + 4);
 }
 
-constexpr ub32 plt_entry[] = {
+static constexpr ub32 plt_entry[] = {
   // Get the address of this PLT entry
   0x7c08'02a6, // mflr    r0
   0x429f'0005, // bcl     20, 31, 4
@@ -213,15 +213,15 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
     case R_PPC_REL24:
     case R_PPC_LOCAL24PC: {
       i64 val = S + A - P;
-      if (sign_extend(val, 25) != val)
-        val = get_thunk_addr(i) - P;
+      if (!is_int(val, 26))
+        val = sym.get_thunk_addr(ctx, P) - P;
       *(ub32 *)loc |= bits(val, 25, 2) << 2;
       break;
     }
     case R_PPC_PLTREL24: {
       i64 val = S - P;
-      if (sym.has_plt(ctx) || sign_extend(val, 25) != val)
-        val = get_thunk_addr(i) - P;
+      if (sym.has_plt(ctx) || !is_int(val, 26))
+        val = sym.get_thunk_addr(ctx, P) - P;
       *(ub32 *)loc |= bits(val, 25, 2) << 2;
       break;
     }

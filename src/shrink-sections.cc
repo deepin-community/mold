@@ -66,20 +66,19 @@ namespace mold {
 
 using E = MOLD_TARGET;
 
-static bool is_resizable(InputSection<E> *isec) {
-  return isec && isec->is_alive && (isec->shdr().sh_flags & SHF_ALLOC) &&
-         (isec->shdr().sh_flags & SHF_EXECINSTR);
+template <>
+i64 get_r_delta(InputSection<E> &isec, u64 offset) {
+  std::span<RelocDelta> deltas = isec.extra.r_deltas;
+  auto it = std::upper_bound(deltas.begin(), deltas.end(), offset,
+                             [](u64 val, const RelocDelta &x) {
+    return val <= x.offset;
+  });
+  return (it == deltas.begin()) ? 0 : (it - 1)->delta;
 }
 
 template <>
-void shrink_sections<E>(Context<E> &ctx) {
+void shrink_sections(Context<E> &ctx) {
   Timer t(ctx, "shrink_sections");
-
-  // True if we can use the 2-byte instructions. This is usually true on
-  // Unix because RV64GC is generally considered the baseline hardware.
-  bool use_rvc = false;
-  if constexpr (is_riscv<E>)
-    use_rvc = get_eflags(ctx) & EF_RISCV_RVC;
 
   // Find all relaxable relocations and record how many bytes we can save
   // into r_deltas.
@@ -93,28 +92,17 @@ void shrink_sections<E>(Context<E> &ctx) {
   // them. We scan relocations only once here.
   tbb::parallel_for_each(ctx.objs, [&](ObjectFile<E> *file) {
     for (std::unique_ptr<InputSection<E>> &isec : file->sections)
-      if (is_resizable(isec.get()))
-        shrink_section(ctx, *isec, use_rvc);
+      if (isec && isec->is_alive && (isec->shdr().sh_flags & SHF_EXECINSTR))
+        shrink_section(ctx, *isec);
   });
 
   // Fix symbol values.
   tbb::parallel_for_each(ctx.objs, [&](ObjectFile<E> *file) {
-    for (Symbol<E> *sym : file->symbols) {
-      if (sym->file != file)
-        continue;
-
-      InputSection<E> *isec = sym->get_input_section();
-      if (!isec || isec->extra.r_deltas.empty())
-        continue;
-
-      std::span<const ElfRel<E>> rels = isec->get_rels(ctx);
-      auto it = std::lower_bound(rels.begin(), rels.end(), sym->value,
-                                 [&](const ElfRel<E> &r, u64 val) {
-        return r.r_offset < val;
-      });
-
-      sym->value -= isec->extra.r_deltas[it - rels.begin()];
-    }
+    for (Symbol<E> *sym : file->symbols)
+      if (sym->file == file)
+        if (InputSection<E> *isec = sym->get_input_section())
+          if (i64 delta = get_r_delta(*isec, sym->value))
+            sym->value -= delta;
   });
 
   // Recompute sizes of executable sections
@@ -126,8 +114,8 @@ void shrink_sections<E>(Context<E> &ctx) {
 
 // Returns the distance between a relocated place and a symbol.
 template <>
-i64 compute_distance<E>(Context<E> &ctx, Symbol<E> &sym,
-                        InputSection<E> &isec, const ElfRel<E> &rel) {
+i64 compute_distance(Context<E> &ctx, Symbol<E> &sym,
+                     InputSection<E> &isec, const ElfRel<E> &rel) {
   // We handle absolute symbols as if they were infinitely far away
   // because `shrink_section` may increase a distance between a branch
   // instruction and an absolute symbol. Branching to an absolute

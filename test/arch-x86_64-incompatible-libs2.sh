@@ -1,8 +1,8 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
-echo 'int main() {}' | $CC -m32 -o $t/exe -xc - >& /dev/null \
-  || skip
+test_cflags -m32 || skip
+nm mold | grep '__tsan_init' && skip
 
 cat <<EOF | $CC -m32 -c -o $t/a.o -xc -
 char hello[] = "Hello world";
@@ -31,8 +31,7 @@ EOF
 mkdir -p $t/script
 echo 'GROUP(libfoo.so)' > $t/script/libfoo.so
 
-$CC -B. -o $t/exe -L$t/lib32 -L$t/lib64 -lfoo $t/e.o -Wl,-rpath $t/lib64 \
-  >& $t/log
+$CC -B. -o $t/exe -L$t/lib32 -L$t/lib64 -lfoo $t/e.o -Wl,-rpath $t/lib64 |&
+  grep 'lib32/libfoo.so: skipping incompatible file'
 
-grep -q 'lib32/libfoo.so: skipping incompatible file' $t/log
-$QEMU $t/exe | grep -q 'Hello world'
+$QEMU $t/exe | grep 'Hello world'

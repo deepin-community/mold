@@ -11,7 +11,8 @@ namespace mold {
 
 struct X86_64;
 struct I386;
-struct ARM64;
+struct ARM64LE;
+struct ARM64BE;
 struct ARM32;
 struct RV64LE;
 struct RV64BE;
@@ -23,7 +24,8 @@ struct PPC64V2;
 struct S390X;
 struct SPARC64;
 struct M68K;
-struct SH4;
+struct SH4LE;
+struct SH4BE;
 struct LOONGARCH64;
 struct LOONGARCH32;
 
@@ -48,10 +50,6 @@ std::ostream &operator<<(std::ostream &out, const ElfRel<E> &rel) {
   out << rel_to_string<E>(rel.r_type);
   return out;
 }
-
-enum : u32 {
-  R_NONE = 0,
-};
 
 enum : u32 {
   SHN_UNDEF = 0,
@@ -410,6 +408,10 @@ enum : u32 {
 //
 
 enum : u32 {
+  R_NONE = 0,
+};
+
+enum : u32 {
   R_X86_64_NONE = 0,
   R_X86_64_64 = 1,
   R_X86_64_PC32 = 2,
@@ -450,6 +452,15 @@ enum : u32 {
   R_X86_64_IRELATIVE = 37,
   R_X86_64_GOTPCRELX = 41,
   R_X86_64_REX_GOTPCRELX = 42,
+  R_X86_64_CODE_4_GOTPCRELX = 43,
+  R_X86_64_CODE_4_GOTTPOFF = 44,
+  R_X86_64_CODE_4_GOTPC32_TLSDESC = 45,
+  R_X86_64_CODE_5_GOTPCRELX = 46,
+  R_X86_64_CODE_5_GOTTPOFF = 47,
+  R_X86_64_CODE_5_GOTPC32_TLSDESC = 48,
+  R_X86_64_CODE_6_GOTPCRELX = 49,
+  R_X86_64_CODE_6_GOTTPOFF = 50,
+  R_X86_64_CODE_6_GOTPC32_TLSDESC = 51,
 };
 
 enum : u32 {
@@ -784,10 +795,6 @@ enum : u32 {
   R_RISCV_ALIGN = 43,
   R_RISCV_RVC_BRANCH = 44,
   R_RISCV_RVC_JUMP = 45,
-  R_RISCV_RVC_LUI = 46,
-  R_RISCV_GPREL_LO12_I = 47,
-  R_RISCV_GPREL_LO12_S = 48,
-  R_RISCV_GPREL_HI20 = 49,
   R_RISCV_RELAX = 51,
   R_RISCV_SUB6 = 52,
   R_RISCV_SET6 = 53,
@@ -977,6 +984,7 @@ enum : u32 {
   R_PPC64_DTPREL16_HIGH = 114,
   R_PPC64_DTPREL16_HIGHA = 115,
   R_PPC64_REL24_NOTOC = 116,
+  R_PPC64_ENTRY = 118,
   R_PPC64_PLTSEQ = 119,
   R_PPC64_PLTCALL = 120,
   R_PPC64_PLTSEQ_NOTOC = 121,
@@ -1760,7 +1768,7 @@ struct ElfRel<SPARC64> {
 };
 
 template <>
-struct ElfRel<SH4> {
+struct ElfRel<SH4LE> {
   ElfRel() = default;
 
   // Addend is ignored except for base relocations because even though
@@ -1775,6 +1783,18 @@ struct ElfRel<SH4> {
   il32 r_addend;
 };
 
+template <>
+struct ElfRel<SH4BE> {
+  ElfRel() = default;
+  ElfRel(u64 offset, u32 type, u32 sym, i64 addend)
+    : r_offset(offset), r_sym(sym), r_type(type), r_addend(sym ? 0 : addend) {}
+
+  ub32 r_offset;
+  ub24 r_sym;
+  u8 r_type;
+  ib32 r_addend;
+};
+
 //
 // Machine descriptions
 //
@@ -1785,7 +1805,8 @@ template <typename E> concept needs_thunk = requires { E::thunk_size; };
 
 template <typename E> concept is_x86_64 = std::same_as<E, X86_64>;
 template <typename E> concept is_i386 = std::same_as<E, I386>;
-template <typename E> concept is_arm64 = std::same_as<E, ARM64>;
+template <typename E> concept is_arm64le = std::same_as<E, ARM64LE>;
+template <typename E> concept is_arm64be = std::same_as<E, ARM64BE>;
 template <typename E> concept is_arm32 = std::same_as<E, ARM32>;
 template <typename E> concept is_rv64le = std::same_as<E, RV64LE>;
 template <typename E> concept is_rv64be = std::same_as<E, RV64BE>;
@@ -1797,11 +1818,13 @@ template <typename E> concept is_ppc64v2 = std::same_as<E, PPC64V2>;
 template <typename E> concept is_s390x = std::same_as<E, S390X>;
 template <typename E> concept is_sparc64 = std::same_as<E, SPARC64>;
 template <typename E> concept is_m68k = std::same_as<E, M68K>;
-template <typename E> concept is_sh4 = std::same_as<E, SH4>;
+template <typename E> concept is_sh4le = std::same_as<E, SH4LE>;
+template <typename E> concept is_sh4be = std::same_as<E, SH4BE>;
 template <typename E> concept is_loongarch64 = std::same_as<E, LOONGARCH64>;
 template <typename E> concept is_loongarch32 = std::same_as<E, LOONGARCH32>;
 
 template <typename E> concept is_x86 = is_x86_64<E> || is_i386<E>;
+template <typename E> concept is_arm64 = is_arm64le<E> || is_arm64be<E>;
 template <typename E> concept is_arm = is_arm64<E> || is_arm32<E>;
 template <typename E> concept is_rv64 = is_rv64le<E> || is_rv64be<E>;
 template <typename E> concept is_rv32 = is_rv32le<E> || is_rv32be<E>;
@@ -1809,10 +1832,11 @@ template <typename E> concept is_riscv = is_rv64<E> || is_rv32<E>;
 template <typename E> concept is_ppc64 = is_ppc64v1<E> || is_ppc64v2<E>;
 template <typename E> concept is_ppc = is_ppc64<E> || is_ppc32<E>;
 template <typename E> concept is_sparc = is_sparc64<E>;
+template <typename E> concept is_sh4 = is_sh4le<E> || is_sh4be<E>;
 template <typename E> concept is_loongarch = is_loongarch64<E> || is_loongarch32<E>;
 
 struct X86_64 {
-  static constexpr std::string_view target_name = "x86_64";
+  static constexpr std::string_view name = "x86_64";
   static constexpr bool is_64 = true;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
@@ -1837,7 +1861,7 @@ struct X86_64 {
 };
 
 struct I386 {
-  static constexpr std::string_view target_name = "i386";
+  static constexpr std::string_view name = "i386";
   static constexpr bool is_64 = false;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = false;
@@ -1861,8 +1885,8 @@ struct I386 {
   static constexpr u32 R_FUNCALL[] = { R_386_PLT32 };
 };
 
-struct ARM64 {
-  static constexpr std::string_view target_name = "arm64";
+struct ARM64LE {
+  static constexpr std::string_view name = "arm64";
   static constexpr bool is_64 = true;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
@@ -1888,12 +1912,17 @@ struct ARM64 {
   static constexpr u32 R_FUNCALL[] = { R_AARCH64_JUMP26, R_AARCH64_CALL26 };
 };
 
+struct ARM64BE : ARM64LE {
+  static constexpr std::string_view name = "arm64be";
+  static constexpr bool is_le = false;
+};
+
 struct ARM32 {
-  static constexpr std::string_view target_name = "arm32";
+  static constexpr std::string_view name = "arm32";
   static constexpr bool is_64 = false;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = false;
-  static constexpr u32 page_size = 4096;
+  static constexpr u32 page_size = 65536;
   static constexpr u32 e_machine = EM_ARM;
   static constexpr u32 plt_hdr_size = 32;
   static constexpr u32 plt_size = 16;
@@ -1918,8 +1947,10 @@ struct ARM32 {
   };
 };
 
-struct RV64 {
+struct RV64LE {
+  static constexpr std::string_view name = "riscv64";
   static constexpr bool is_64 = true;
+  static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
   static constexpr u32 page_size = 4096;
   static constexpr u32 e_machine = EM_RISCV;
@@ -1941,18 +1972,15 @@ struct RV64 {
   static constexpr u32 R_FUNCALL[] = { R_RISCV_CALL, R_RISCV_CALL_PLT };
 };
 
-struct RV64LE : RV64 {
-  static constexpr std::string_view target_name = "riscv64";
-  static constexpr bool is_le = true;
-};
-
-struct RV64BE : RV64 {
-  static constexpr std::string_view target_name = "riscv64be";
+struct RV64BE : RV64LE {
+  static constexpr std::string_view name = "riscv64be";
   static constexpr bool is_le = false;
 };
 
-struct RV32 {
+struct RV32LE {
+  static constexpr std::string_view name = "riscv32";
   static constexpr bool is_64 = false;
+  static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
   static constexpr u32 page_size = 4096;
   static constexpr u32 e_machine = EM_RISCV;
@@ -1974,18 +2002,13 @@ struct RV32 {
   static constexpr u32 R_FUNCALL[] = { R_RISCV_CALL, R_RISCV_CALL_PLT };
 };
 
-struct RV32LE : RV32 {
-  static constexpr std::string_view target_name = "riscv32";
-  static constexpr bool is_le = true;
-};
-
-struct RV32BE : RV32 {
-  static constexpr std::string_view target_name = "riscv32be";
+struct RV32BE : RV32LE {
+  static constexpr std::string_view name = "riscv32be";
   static constexpr bool is_le = false;
 };
 
 struct PPC32 {
-  static constexpr std::string_view target_name = "ppc32";
+  static constexpr std::string_view name = "ppc32";
   static constexpr bool is_64 = false;
   static constexpr bool is_le = false;
   static constexpr bool is_rela = true;
@@ -2032,7 +2055,7 @@ struct PPC64 {
 };
 
 struct PPC64V1 : PPC64 {
-  static constexpr std::string_view target_name = "ppc64v1";
+  static constexpr std::string_view name = "ppc64v1";
   static constexpr bool is_le = false;
   static constexpr u32 plt_hdr_size = 44;
   static constexpr u32 pltgot_size = 0;
@@ -2042,7 +2065,7 @@ struct PPC64V1 : PPC64 {
 };
 
 struct PPC64V2 : PPC64 {
-  static constexpr std::string_view target_name = "ppc64v2";
+  static constexpr std::string_view name = "ppc64v2";
   static constexpr bool is_le = true;
   static constexpr u32 plt_hdr_size = 52;
   static constexpr u32 plt_size = 4;
@@ -2053,7 +2076,7 @@ struct PPC64V2 : PPC64 {
 };
 
 struct S390X {
-  static constexpr std::string_view target_name = "s390x";
+  static constexpr std::string_view name = "s390x";
   static constexpr bool is_64 = true;
   static constexpr bool is_le = false;
   static constexpr bool is_rela = true;
@@ -2077,7 +2100,7 @@ struct S390X {
 };
 
 struct SPARC64 {
-  static constexpr std::string_view target_name = "sparc64";
+  static constexpr std::string_view name = "sparc64";
   static constexpr bool is_64 = true;
   static constexpr bool is_le = false;
   static constexpr bool is_rela = true;
@@ -2101,7 +2124,7 @@ struct SPARC64 {
 };
 
 struct M68K {
-  static constexpr std::string_view target_name = "m68k";
+  static constexpr std::string_view name = "m68k";
   static constexpr bool is_64 = false;
   static constexpr bool is_le = false;
   static constexpr bool is_rela = true;
@@ -2123,8 +2146,8 @@ struct M68K {
   static constexpr u32 R_FUNCALL[] = { R_68K_PLT32 };
 };
 
-struct SH4 {
-  static constexpr std::string_view target_name = "sh4";
+struct SH4LE {
+  static constexpr std::string_view name = "sh4";
   static constexpr bool is_64 = false;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
@@ -2146,12 +2169,18 @@ struct SH4 {
   static constexpr u32 R_FUNCALL[] = { R_SH_PLT32 };
 };
 
+struct SH4BE : SH4LE {
+  static constexpr std::string_view name = "sh4be";
+  static constexpr bool is_le = false;
+  static constexpr u8 filler[] = { 0x90, 0x00 }; // nop
+};
+
 struct LOONGARCH64 {
-  static constexpr std::string_view target_name = "loongarch64";
+  static constexpr std::string_view name = "loongarch64";
   static constexpr bool is_64 = true;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
-  static constexpr u32 page_size = 16384;
+  static constexpr u32 page_size = 65536;
   static constexpr u32 e_machine = EM_LOONGARCH;
   static constexpr u32 plt_hdr_size = 32;
   static constexpr u32 plt_size = 16;
@@ -2172,11 +2201,11 @@ struct LOONGARCH64 {
 };
 
 struct LOONGARCH32 {
-  static constexpr std::string_view target_name = "loongarch32";
+  static constexpr std::string_view name = "loongarch32";
   static constexpr bool is_64 = false;
   static constexpr bool is_le = true;
   static constexpr bool is_rela = true;
-  static constexpr u32 page_size = 16384;
+  static constexpr u32 page_size = 65536;
   static constexpr u32 e_machine = EM_LOONGARCH;
   static constexpr u32 plt_hdr_size = 32;
   static constexpr u32 plt_size = 16;

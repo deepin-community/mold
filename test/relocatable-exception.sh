@@ -3,9 +3,10 @@
 
 [ $MACHINE = m68k ] && skip
 [ $MACHINE = sh4 ] && skip
+[ $MACHINE = sh4aeb ] && skip
 
 # OneTBB isn't tsan-clean
-nm mold | grep -q '__tsan_init' && skip
+nm mold | grep '__tsan_init' && skip
 
 cat <<EOF | $CXX -c -o $t/a.o -xc++ -
 int foo() {

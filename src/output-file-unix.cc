@@ -4,8 +4,7 @@
 #include <filesystem>
 #include <sys/file.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <system_error>
 
 namespace mold {
 
@@ -40,9 +39,9 @@ class MemoryMappedOutputFile : public OutputFile<E> {
 public:
   MemoryMappedOutputFile(Context<E> &ctx, std::string path, i64 filesize, int perm)
     : OutputFile<E>(path, filesize, true) {
-    std::filesystem::path dir = filepath(path).parent_path();
-    std::string filename = filepath(path).filename().string();
-    std::string tmpfile = dir / ("." + filename + "." + std::to_string(getpid()));
+    std::string pid = std::to_string(getpid());
+    std::string tmpfile =
+      path_dirname(path) / ("." + path_filename(path) + "." + pid);
 
     this->fd = open_or_create_file(ctx, path, tmpfile, perm);
 
@@ -111,14 +110,9 @@ OutputFile<E>::open(Context<E> &ctx, std::string path, i64 filesize, int perm) {
   if (path.starts_with('/') && !ctx.arg.chroot.empty())
     path = ctx.arg.chroot + "/" + path_clean(path);
 
-  bool is_special = false;
-  if (path == "-") {
-    is_special = true;
-  } else {
-    struct stat st;
-    if (stat(path.c_str(), &st) == 0 && (st.st_mode & S_IFMT) != S_IFREG)
-      is_special = true;
-  }
+  std::error_code error;
+  bool is_special = path == "-" ||
+                    (!std::filesystem::is_regular_file(path, error) && !error);
 
   OutputFile<E> *file;
   if (is_special)

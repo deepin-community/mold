@@ -1,8 +1,7 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
-echo 'int main() {}' | $CC -m32 -o $t/exe -xc - >& /dev/null \
-  || skip
+test_cflags -m32 || skip
 
 cat <<EOF | $CC -m32 -c -o $t/a.o -xc -
 char hello[] = "Hello world";
@@ -36,7 +35,7 @@ echo 'OUTPUT_FORMAT(elf32-i386)' > $t/script/libfoo.so
 $CC -B. -o $t/exe -L$t/script -L$t/lib32 -L$t/lib64 \
   $t/e.o -lfoo -Wl,-rpath $t/lib64 >& $t/log
 
-grep -q 'script/libfoo.so: skipping incompatible file' $t/log
-grep -q 'lib32/libfoo.so: skipping incompatible file' $t/log
-grep -q 'lib32/libfoo.a: skipping incompatible file' $t/log
-$QEMU $t/exe | grep -q 'Hello world'
+grep 'script/libfoo.so: skipping incompatible file' $t/log
+grep 'lib32/libfoo.so: skipping incompatible file' $t/log
+grep 'lib32/libfoo.a: skipping incompatible file' $t/log
+$QEMU $t/exe | grep 'Hello world'

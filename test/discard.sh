@@ -17,24 +17,24 @@ EOF
 
 ./mold -o $t/exe $t/a.o
 readelf --symbols $t/exe > $t/log
-grep -Fq _start $t/log
-grep -Fq foo $t/log
-grep -Fq .Lbar $t/log
+grep -F _start $t/log
+grep -F foo $t/log
+grep -F .Lbar $t/log
 
 ./mold -o $t/exe $t/a.o --discard-locals
 readelf --symbols $t/exe > $t/log
-grep -Fq _start $t/log
-grep -Fq foo $t/log
-! grep -Fq .Lbar $t/log || false
+grep -F _start $t/log
+grep -F foo $t/log
+not grep -F .Lbar $t/log
 
 ./mold -o $t/exe $t/a.o --discard-all
 readelf --symbols $t/exe > $t/log
-grep -Fq _start $t/log
-! grep -Fq foo $t/log || false
-! grep -Fq .Lbar $t/log || false
+grep -F _start $t/log
+not grep -F foo $t/log
+not grep -F .Lbar $t/log
 
 ./mold -o $t/exe $t/a.o --strip-all
 readelf --symbols $t/exe > $t/log
-! grep -Fq _start $t/log || false
-! grep -Fq foo $t/log || false
-! grep -Fq .Lbar $t/log || false
+not grep -F _start $t/log
+not grep -F foo $t/log
+not grep -F .Lbar $t/log

@@ -13,10 +13,10 @@ int main() {}
 EOF
 
 $CC -B. -o $t/exe $t/c.o $t/b.a
-! readelf --symbols $t/exe | grep -q foobar || false
+readelf --symbols $t/exe | not grep foobar
 
 $CC -B. -o $t/exe $t/c.o $t/b.a -Wl,-require-defined,foobar
-readelf --symbols $t/exe | grep -q foobar
+readelf --symbols $t/exe | grep foobar
 
-! $CC -B. -o $t/exe $t/c.o $t/b.a -Wl,-require-defined,xyz >& $t/log
-grep -q 'undefined symbol: xyz' $t/log
+not $CC -B. -o $t/exe $t/c.o $t/b.a -Wl,-require-defined,xyz |&
+  grep 'undefined symbol: xyz'

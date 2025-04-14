@@ -33,7 +33,7 @@
 // we need to add TP to a return value before use. I don't know why it is
 // different, but that is the way it is.
 //
-// https://github.com/rui314/psabi/blob/main/s390x.pdf
+// https://github.com/IBM/s390x-abi/releases/download/v1.6.1/lzsabi_s390x.pdf
 
 #include "mold.h"
 
@@ -170,9 +170,6 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       check(S + A, 0, 1LL << 32);
       *(ub32 *)loc = S + A;
       break;
-    case R_390_PLT64:
-      *(ub64 *)loc = S + A;
-      break;
     case R_390_PC12DBL:
     case R_390_PLT12DBL:
       check_dbl(S + A - P, -(1 << 12), 1 << 12);
@@ -187,6 +184,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       *(ub32 *)loc = S + A - P;
       break;
     case R_390_PC64:
+    case R_390_PLT64:
       *(ub64 *)loc = S + A - P;
       break;
     case R_390_PC16DBL:
@@ -250,6 +248,19 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       *(ub32 *)loc = (GOT + A - P) >> 1;
       break;
     case R_390_GOTENT:
+      // If we can relax a GOT-loading LGRL to an address-materializing
+      // LARL, do that. The format of LGRL is 0xc 0x4 <reg> 0x8 followed
+      // by a 32-bit offset. LARL is 0xc 0x0 <reg> 0x0.
+      if (ctx.arg.relax && sym.is_pcrel_linktime_const(ctx)) {
+        u64 op = *(ub16 *)(loc - 2);
+        u64 val = S + A - P;
+        if ((op & 0xff0f) == 0xc408 && A == 2 && (val & 1) == 0 &&
+            is_int(val, 33)) {
+          *(ub16 *)(loc - 2) = 0xc000 | (op & 0x00f0);
+          *(ub32 *)loc = val >> 1;
+          break;
+        }
+      }
       check_dbl(GOT + G + A - P, -(1LL << 32), 1LL << 32);
       *(ub32 *)loc = (GOT + G + A - P) >> 1;
       break;
@@ -398,8 +409,10 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_390_32:
       scan_absrel(ctx, sym, rel);
       break;
+    case R_390_PC12DBL:
     case R_390_PC16:
     case R_390_PC16DBL:
+    case R_390_PC24DBL:
     case R_390_PC32:
     case R_390_PC32DBL:
     case R_390_PC64:

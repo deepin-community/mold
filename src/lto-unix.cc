@@ -177,13 +177,14 @@ static PluginStatus add_input_file(const char *path) {
   static i64 file_priority = 100;
 
   MappedFile *mf = must_open_file(ctx, path);
+  mf->is_dependency = false;
 
-  ObjectFile<E> *file = ObjectFile<E>::create(ctx, mf, "", false);
+  ObjectFile<E> *file = new ObjectFile<E>(ctx, mf, "");
   ctx.obj_pool.emplace_back(file);
   lto_objects<E>.push_back(file);
 
   file->priority = file_priority++;
-  file->is_alive = true;
+  file->is_reachable = true;
   file->parse(ctx);
   file->resolve_symbols(ctx);
   return LDPS_OK;
@@ -284,7 +285,7 @@ get_symbols(const void *handle, int nsyms, PluginSymbol *psyms, bool is_v2) {
   // If file is an archive member which was not chose to be included in
   // to the final result, we need to make the plugin to ignore all
   // symbols.
-  if (!file.is_alive) {
+  if (!file.is_reachable) {
     assert(!is_v2);
     for (int i = 0; i < nsyms; i++)
       psyms[i].resolution = LDPR_PREEMPTED_REG;
@@ -342,7 +343,7 @@ static void restart_process(Context<E> &ctx) {
     args.push_back(strdup(std::string(arg).c_str()));
 
   for (std::unique_ptr<ObjectFile<E>> &file : ctx.obj_pool)
-    if (file->is_lto_obj && !file->is_alive)
+    if (file->is_lto_obj && !file->is_reachable)
       args.push_back(strdup(("--:ignore-ir-file=" +
                              file->mf->get_identifier()).c_str()));
 
@@ -598,6 +599,12 @@ create_plugin_input_file(Context<E> &ctx, MappedFile *mf) {
 
 template <typename E>
 ObjectFile<E> *read_lto_object(Context<E> &ctx, MappedFile *mf) {
+  if (ctx.arg.plugin.empty())
+    Fatal(ctx) << mf->name << ": don't know how to handle this LTO object file "
+               << "because no -plugin option was given. Please make sure you "
+               << "added -flto not only for creating object files but also for "
+               << "creating the final executable.";
+
   load_lto_plugin(ctx);
 
   // V0 API's claim_file is not thread-safe.
@@ -605,12 +612,6 @@ ObjectFile<E> *read_lto_object(Context<E> &ctx, MappedFile *mf) {
   std::unique_lock lock(mu, std::defer_lock);
   if (!is_gcc_linker_api_v1)
     lock.lock();
-
-  if (ctx.arg.plugin.empty())
-    Fatal(ctx) << mf->name << ": don't know how to handle this LTO object file "
-               << "because no -plugin option was given. Please make sure you "
-               << "added -flto not only for creating object files but also for "
-               << "creating the final executable.";
 
   // Create mold's object instance
   ObjectFile<E> *obj = new ObjectFile<E>;
@@ -685,7 +686,7 @@ std::vector<ObjectFile<E> *> run_lto_plugin(Context<E> &ctx) {
   phase = 2;
 
   // Set `referenced_by_regular_obj` bit.
-  tbb::parallel_for_each(ctx.objs, [&](ObjectFile<E> *file) {
+  tbb::parallel_for_each(ctx.objs, [](ObjectFile<E> *file) {
     if (!file->is_lto_obj) {
       for (Symbol<E> *sym : file->get_global_syms()) {
         if (sym->file && !sym->file->is_dso &&
@@ -717,7 +718,7 @@ std::vector<ObjectFile<E> *> run_lto_plugin(Context<E> &ctx) {
   // given to the LTO backend. Such sections contains code and data for
   // peripherails (typically GPUs).
   for (ObjectFile<E> *file : ctx.objs) {
-    if (file->is_alive && !file->is_lto_obj && file->is_gcc_offload_obj) {
+    if (file->is_reachable && !file->is_lto_obj && file->is_gcc_offload_obj) {
       PluginInputFile pfile = create_plugin_input_file(ctx, file->mf);
       int claimed = false;
       claim_file_hook(&pfile, &claimed);

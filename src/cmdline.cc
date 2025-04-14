@@ -1,12 +1,16 @@
 #include "mold.h"
 
+#include <filesystem>
 #include <random>
 #include <regex>
 #include <sstream>
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <system_error>
 #include <tbb/global_control.h>
 #include <unordered_set>
+
+#if __has_include(<sys/utsname.h>)
+# include <sys/utsname.h>
+#endif
 
 #if __has_include(<unistd.h>)
 # include <unistd.h>
@@ -123,7 +127,8 @@ Options:
   --oformat=binary            Omit ELF, section, and program headers
   --pack-dyn-relocs=[relr,none]
                               Pack dynamic relocations
-  --package-metadata=STRING   Set a given string to .note.package
+  --package-metadata=PERCENT_ENCODED_STRING
+                              Set a given string to .note.package
   --perf                      Print performance statistics
   --pie, --pic-executable     Create a position-independent executable
     --no-pie, --no-pic-executable
@@ -222,8 +227,8 @@ Options:
     -z notext
     -z textoff
 
-mold: supported targets: elf32-i386 elf64-x86-64 elf32-littlearm elf64-littleaarch64 elf32-littleriscv elf32-bigriscv elf64-littleriscv elf64-bigriscv elf32-powerpc elf64-powerpc elf64-powerpc elf64-powerpcle elf64-s390 elf64-sparc elf32-m68k elf32-sh-linux elf64-loongarch elf32-loongarch
-mold: supported emulations: elf_i386 elf_x86_64 armelf_linux_eabi aarch64linux aarch64elf elf32lriscv elf32briscv elf64lriscv elf64briscv elf32ppc elf32ppclinux elf64ppc elf64lppc elf64_s390 elf64_sparc m68kelf shlelf_linux elf64loongarch elf32loongarch)";
+mold: supported targets: elf32-i386 elf64-x86-64 elf32-littlearm elf64-littleaarch64 elf64-bigaarch64 elf32-littleriscv elf32-bigriscv elf64-littleriscv elf64-bigriscv elf32-powerpc elf64-powerpc elf64-powerpc elf64-powerpcle elf64-s390 elf64-sparc elf32-m68k elf32-sh-linux elf64-loongarch elf32-loongarch
+mold: supported emulations: elf_i386 elf_x86_64 armelf_linux_eabi aarch64elf aarch64linux aarch64elfb aarch64linuxb elf32lriscv elf32briscv elf64lriscv elf64briscv elf32ppc elf32ppclinux elf64ppc elf64lppc elf64_s390 elf64_sparc m68kelf shlelf_linux shelf_linux elf64loongarch elf32loongarch)";
 
 template <typename E>
 static std::vector<std::string_view>
@@ -398,12 +403,12 @@ static std::vector<u8> parse_hex_build_id(Context<E> &ctx, std::string_view arg)
 
 template <typename E>
 static std::string
-parse_encoded_package_metadata(Context<E> &ctx, std::string_view arg) {
+parse_package_metadata(Context<E> &ctx, std::string_view arg) {
   auto flags = std::regex_constants::optimize | std::regex_constants::ECMAScript;
   static std::regex re(R"(([^%]|%[0-9a-fA-F][0-9a-fA-F])*)", flags);
 
   if (!std::regex_match(arg.begin(), arg.end(), re))
-    Fatal(ctx) << "--encoded-package-metadata: invalid string: " << arg;
+    Fatal(ctx) << "--package-metadata: invalid string: " << arg;
 
   std::ostringstream out;
   while (!arg.empty()) {
@@ -460,10 +465,9 @@ static void read_retain_symbols_file(Context<E> &ctx, std::string_view path) {
   ctx.arg.retain_symbols_file = std::move(vec);
 }
 
-static bool is_file(std::string_view path) {
-  struct stat st;
-  return stat(std::string(path).c_str(), &st) == 0 &&
-         (st.st_mode & S_IFMT) != S_IFDIR;
+static bool is_file(const std::filesystem::path& path) {
+  std::error_code error;
+  return !std::filesystem::is_directory(path, error) && !error;
 }
 
 template <typename E>
@@ -539,6 +543,33 @@ parse_defsym_value(Context<E> &ctx, std::string_view s) {
   return get_symbol(ctx, s);
 }
 
+// Parses a kernel version string, e.g. "6.8.0-47-generic".
+static std::tuple<int, int, int>
+parse_kernel_version(std::string str) {
+  auto flags = std::regex_constants::optimize | std::regex_constants::ECMAScript;
+  static std::regex re(R"(^(\d+)\.(\d+)\.(\d+))", flags);
+  std::smatch m;
+
+  if (!std::regex_search(str, m, re))
+    return {0, 0, 0};
+  return {std::stoi(m[1]), std::stoi(m[2]), std::stoi(m[3])};
+}
+
+// Version 6.11 and 6.12 of the Linux kernel does not return ETXTBSY for
+// open(2) on an executable file that is currently running. This function
+// returns true if we are running on a Linux kernel older than 6.11 or newer
+// than 6.12.
+static bool returns_etxtbsy() {
+#if HAVE_UNAME
+  struct utsname buf;
+  if (uname(&buf) == 0 && strcmp(buf.sysname, "Linux") == 0) {
+    std::tuple<int, int, int> ver = parse_kernel_version(buf.release);
+    return ver < std::tuple{6, 11, 0} || std::tuple{6, 13, 0} <= ver;
+  }
+#endif
+  return false;
+}
+
 template <typename E>
 std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   std::span<std::string_view> args = ctx.cmdline_args;
@@ -555,6 +586,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   std::optional<SeparateCodeKind> z_separate_code;
   std::optional<bool> report_undefined;
   std::optional<bool> z_relro;
+  std::optional<bool> z_dynamic_undefined_weak;
   std::optional<std::string> separate_debug_file;
   std::optional<u64> shuffle_sections_seed;
   std::unordered_set<std::string_view> rpaths;
@@ -678,52 +710,57 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("V")) {
       Out(ctx) << get_mold_version()
                << "\n  Supported emulations:\n   elf_x86_64\n   elf_i386\n"
-               << "   aarch64linux\n   armelf_linux_eabi\n   elf64lriscv\n"
+               << "   aarch64elf\n   aarch64linux\n   aarch64elfb\n"
+               << "   aarch64linuxb\n   armelf_linux_eabi\n   elf64lriscv\n"
                << "   elf64briscv\n   elf32lriscv\n   elf32briscv\n"
                << "   elf32ppc\n   elf64ppc\n   elf64lppc\n   elf64_s390\n"
                << "   elf64_sparc\n   m68kelf\n   shlelf_linux\n"
-               << "   elf64loongarch\n   elf32loongarch";
+               << "   shelf_linux\n   elf64loongarch\n   elf32loongarch";
       version_shown = true;
     } else if (read_arg("m")) {
       if (arg == "elf_x86_64") {
-        ctx.arg.emulation = X86_64::target_name;
+        ctx.arg.emulation = X86_64::name;
       } else if (arg == "elf_i386") {
-        ctx.arg.emulation = I386::target_name;
-      } else if (arg == "aarch64linux") {
-        ctx.arg.emulation = ARM64::target_name;
+        ctx.arg.emulation = I386::name;
+      } else if (arg == "aarch64elf" || arg == "aarch64linux") {
+        ctx.arg.emulation = ARM64LE::name;
+      } else if (arg == "aarch64elfb" || arg == "aarch64linuxb") {
+        ctx.arg.emulation = ARM64BE::name;
       } else if (arg == "armelf_linux_eabi") {
-        ctx.arg.emulation = ARM32::target_name;
+        ctx.arg.emulation = ARM32::name;
       } else if (arg == "elf64lriscv") {
-        ctx.arg.emulation = RV64LE::target_name;
+        ctx.arg.emulation = RV64LE::name;
       } else if (arg == "elf64briscv") {
-        ctx.arg.emulation = RV64BE::target_name;
+        ctx.arg.emulation = RV64BE::name;
       } else if (arg == "elf32lriscv") {
-        ctx.arg.emulation = RV32LE::target_name;
+        ctx.arg.emulation = RV32LE::name;
       } else if (arg == "elf32briscv") {
-        ctx.arg.emulation = RV32BE::target_name;
+        ctx.arg.emulation = RV32BE::name;
       } else if (arg == "elf32ppc" || arg == "elf32ppclinux") {
-        ctx.arg.emulation = PPC32::target_name;
+        ctx.arg.emulation = PPC32::name;
       } else if (arg == "elf64ppc") {
-        ctx.arg.emulation = PPC64V1::target_name;
+        ctx.arg.emulation = PPC64V1::name;
       } else if (arg == "elf64lppc") {
-        ctx.arg.emulation = PPC64V2::target_name;
+        ctx.arg.emulation = PPC64V2::name;
       } else if (arg == "elf64_s390") {
-        ctx.arg.emulation = S390X::target_name;
+        ctx.arg.emulation = S390X::name;
       } else if (arg == "elf64_sparc") {
-        ctx.arg.emulation = SPARC64::target_name;
+        ctx.arg.emulation = SPARC64::name;
       } else if (arg == "m68kelf") {
-        ctx.arg.emulation = M68K::target_name;
-      } else if (arg == "shlelf_linux") {
-        ctx.arg.emulation = SH4::target_name;
+        ctx.arg.emulation = M68K::name;
+      } else if (arg == "shlelf" || arg == "shlelf_linux") {
+        ctx.arg.emulation = SH4LE::name;
+      } else if (arg == "shelf" || arg == "shelf_linux") {
+        ctx.arg.emulation = SH4BE::name;
       } else if (arg == "elf64loongarch") {
-        ctx.arg.emulation = LOONGARCH64::target_name;
+        ctx.arg.emulation = LOONGARCH64::name;
       } else if (arg == "elf32loongarch") {
-        ctx.arg.emulation = LOONGARCH32::target_name;
+        ctx.arg.emulation = LOONGARCH32::name;
       } else {
         Fatal(ctx) << "unknown -m argument: " << arg;
       }
     } else if (read_flag("end-lib")) {
-      remaining.push_back("--end-lib");
+      remaining.emplace_back("--end-lib");
     } else if (read_flag("export-dynamic") || read_flag("E")) {
       ctx.arg.export_dynamic = true;
     } else if (read_flag("no-export-dynamic")) {
@@ -754,10 +791,10 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       ctx.arg.print_map = true;
     } else if (read_flag("Bstatic") || read_flag("dn") || read_flag("static")) {
       ctx.arg.static_ = true;
-      remaining.push_back("--Bstatic");
+      remaining.emplace_back("--Bstatic");
     } else if (read_flag("Bdynamic") || read_flag("dy")) {
       ctx.arg.static_ = false;
-      remaining.push_back("--Bdynamic");
+      remaining.emplace_back("--Bdynamic");
     } else if (read_flag("shared") || read_flag("Bshareable")) {
       ctx.arg.shared = true;
     } else if (read_arg("spare-dynamic-tags")) {
@@ -766,7 +803,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       ctx.arg.spare_program_headers
         = parse_number(ctx, "spare-program-headers", arg);
     } else if (read_flag("start-lib")) {
-      remaining.push_back("--start-lib");
+      remaining.emplace_back("--start-lib");
     } else if (read_flag("start-stop")) {
       ctx.arg.start_stop = true;
     } else if (read_arg("dependency-file")) {
@@ -809,7 +846,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("filler")) {
       ctx.arg.filler = parse_hex(ctx, "filler", arg);
     } else if (read_arg("L") || read_arg("library-path")) {
-      ctx.arg.library_paths.push_back(std::string(arg));
+      ctx.arg.library_paths.emplace_back(arg);
     } else if (read_arg("sysroot")) {
       ctx.arg.sysroot = arg;
     } else if (read_arg("unique")) {
@@ -851,8 +888,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       } else {
         Fatal(ctx) << "invalid --hash-style argument: " << arg;
       }
-    } else if (read_arg("soname") ||
-               read_arg("h")) {
+    } else if (read_arg("soname") || read_arg("h")) {
       ctx.arg.soname = arg;
     } else if (read_flag("allow-multiple-definition")) {
       ctx.arg.allow_multiple_definition = true;
@@ -895,10 +931,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("pack-dyn-relocs=none") ||
                read_z_flag("nopack-relative-relocs")) {
       ctx.arg.pack_dyn_relocs_relr = false;
-    } else if (read_arg("encoded-package-metadata")) {
-      ctx.arg.package_metadata = parse_encoded_package_metadata(ctx, arg);
     } else if (read_arg("package-metadata")) {
-      ctx.arg.package_metadata = arg;
+      ctx.arg.package_metadata = parse_package_metadata(ctx, arg);
     } else if (read_flag("stats")) {
       ctx.arg.stats = true;
       Counter::enabled = true;
@@ -1053,9 +1087,9 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_z_arg("stack-size")) {
       ctx.arg.z_stack_size = parse_number(ctx, "-z stack-size", arg);
     } else if (read_z_flag("dynamic-undefined-weak")) {
-      ctx.arg.z_dynamic_undefined_weak = true;
+      z_dynamic_undefined_weak = true;
     } else if (read_z_flag("nodynamic-undefined-weak")) {
-      ctx.arg.z_dynamic_undefined_weak = false;
+      z_dynamic_undefined_weak = false;
     } else if (read_z_flag("sectionheader")) {
       ctx.arg.z_sectionheader = true;
     } else if (read_z_flag("nosectionheader")) {
@@ -1094,6 +1128,10 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       ctx.arg.print_gc_sections = true;
     } else if (read_flag("no-print-gc-sections")) {
       ctx.arg.print_gc_sections = false;
+    } else if (read_arg("discard-section")) {
+      ctx.arg.discard_section.insert(arg);
+    } else if (read_arg("no-discard-section")) {
+      ctx.arg.discard_section.erase(arg);
     } else if (read_arg("icf")) {
       if (arg == "all") {
         ctx.arg.icf = true;
@@ -1124,25 +1162,23 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("plugin")) {
       ctx.arg.plugin = arg;
     } else if (read_arg("plugin-opt")) {
-      ctx.arg.plugin_opt.push_back(std::string(arg));
+      ctx.arg.plugin_opt.emplace_back(arg);
     } else if (read_flag("lto-cs-profile-generate")) {
-      ctx.arg.plugin_opt.push_back("cs-profile-generate");
+      ctx.arg.plugin_opt.emplace_back("cs-profile-generate");
     } else if (read_arg("lto-cs-profile-file")) {
       ctx.arg.plugin_opt.push_back("cs-profile-path=" + std::string(arg));
     } else if (read_flag("lto-debug-pass-manager")) {
-      ctx.arg.plugin_opt.push_back("debug-pass-manager");
+      ctx.arg.plugin_opt.emplace_back("debug-pass-manager");
     } else if (read_flag("disable-verify")) {
-      ctx.arg.plugin_opt.push_back("disable-verify");
+      ctx.arg.plugin_opt.emplace_back("disable-verify");
     } else if (read_flag("lto-emit-asm")) {
-      ctx.arg.plugin_opt.push_back("emit-asm");
-    } else if (read_arg("thinlto-jobs")) {
-      ctx.arg.plugin_opt.push_back("jobs=" + std::string(arg));
+      ctx.arg.plugin_opt.emplace_back("emit-asm");
     } else if (read_flag("no-legacy-pass-manager")) {
-      ctx.arg.plugin_opt.push_back("legacy-pass-manager");
+      ctx.arg.plugin_opt.emplace_back("legacy-pass-manager");
     } else if (read_arg("lto-partitions")) {
       ctx.arg.plugin_opt.push_back("lto-partitions=" + std::string(arg));
     } else if (read_flag("no-lto-legacy-pass-manager")) {
-      ctx.arg.plugin_opt.push_back("new-pass-manager");
+      ctx.arg.plugin_opt.emplace_back("new-pass-manager");
     } else if (read_arg("lto-obj-path")) {
       ctx.arg.plugin_opt.push_back("obj-path=" + std::string(arg));
     } else if (read_arg("opt-remarks-filename")) {
@@ -1155,7 +1191,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("opt-remarks-passes")) {
       ctx.arg.plugin_opt.push_back("opt-remarks-passes=" + std::string(arg));
     } else if (read_flag("opt-remarks-with_hotness")) {
-      ctx.arg.plugin_opt.push_back("opt-remarks-with-hotness");
+      ctx.arg.plugin_opt.emplace_back("opt-remarks-with-hotness");
     } else if (args[0].starts_with("-lto-O")) {
       ctx.arg.plugin_opt.push_back("O" + std::string(args[0].substr(6)));
       args = args.subspan(1);
@@ -1168,13 +1204,13 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("lto-sample-profile")) {
       ctx.arg.plugin_opt.push_back("sample-profile=" + std::string(arg));
     } else if (read_flag("save-temps")) {
-      ctx.arg.plugin_opt.push_back("save-temps");
+      ctx.arg.plugin_opt.emplace_back("save-temps");
     } else if (read_flag("thinlto-emit-imports-files")) {
-      ctx.arg.plugin_opt.push_back("thinlto-emit-imports-files");
+      ctx.arg.plugin_opt.emplace_back("thinlto-emit-imports-files");
     } else if (read_arg("thinlto-index-only")) {
       ctx.arg.plugin_opt.push_back("thinlto-index-only=" + std::string(arg));
     } else if (read_flag("thinlto-index-only")) {
-      ctx.arg.plugin_opt.push_back("thinlto-index-only");
+      ctx.arg.plugin_opt.emplace_back("thinlto-index-only");
     } else if (read_arg("thinlto-object-suffix-replace")) {
       ctx.arg.plugin_opt.push_back("thinlto-object-suffix-replace=" +
                                    std::string(arg));
@@ -1309,21 +1345,21 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("export-dynamic-symbol-list")) {
       append(ctx.dynamic_list_patterns, parse_dynamic_list(ctx, arg));
     } else if (read_flag("as-needed")) {
-      remaining.push_back("--as-needed");
+      remaining.emplace_back("--as-needed");
     } else if (read_flag("no-as-needed")) {
-      remaining.push_back("--no-as-needed");
+      remaining.emplace_back("--no-as-needed");
     } else if (read_flag("whole-archive")) {
-      remaining.push_back("--whole-archive");
+      remaining.emplace_back("--whole-archive");
     } else if (read_flag("no-whole-archive")) {
-      remaining.push_back("--no-whole-archive");
+      remaining.emplace_back("--no-whole-archive");
     } else if (read_arg("l") || read_arg("library")) {
       remaining.push_back("-l" + std::string(arg));
     } else if (read_arg("script") || read_arg("T")) {
-      remaining.push_back(std::string(arg));
+      remaining.emplace_back(arg);
     } else if (read_flag("push-state")) {
-      remaining.push_back("--push-state");
+      remaining.emplace_back("--push-state");
     } else if (read_flag("pop-state")) {
-      remaining.push_back("--pop-state");
+      remaining.emplace_back("--pop-state");
     } else if (args[0].starts_with("-z") && args[0].size() > 2) {
       Warn(ctx) << "unknown command line option: " << args[0];
       args = args.subspan(1);
@@ -1336,7 +1372,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else {
       if (args[0].starts_with('-'))
         Fatal(ctx) << "unknown command line option: " << args[0];
-      remaining.push_back(std::string(args[0]));
+      remaining.emplace_back(args[0]);
       args = args.subspan(1);
     }
   }
@@ -1395,6 +1431,12 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   else if (!ctx.arg.section_order.empty())
     ctx.arg.z_separate_code = SEPARATE_LOADABLE_SEGMENTS;
 
+  // `-z dynamic-undefined-weak` is enabled by default for DSOs.
+  if (z_dynamic_undefined_weak)
+    ctx.arg.z_dynamic_undefined_weak = *z_dynamic_undefined_weak;
+  else
+    ctx.arg.z_dynamic_undefined_weak = ctx.arg.shared;
+
   // --section-order implies `-z norelro`
   if (z_relro)
     ctx.arg.z_relro = *z_relro;
@@ -1416,8 +1458,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   // to handle it as an exception.
   if constexpr (!E::is_rela || is_sh4<E>)
     if (!ctx.arg.apply_dynamic_relocs)
-      Fatal(ctx) << "--no-apply-dynamic-relocs may not be used on "
-                 << E::target_name;
+      Fatal(ctx) << "--no-apply-dynamic-relocs may not be used on " << E::name;
 
   if constexpr (is_sparc<E>)
     if (ctx.arg.apply_dynamic_relocs)
@@ -1436,8 +1477,10 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     ctx.arg.repro = true;
 
   if (ctx.arg.default_symver) {
-    std::string ver = ctx.arg.soname.empty() ?
-      filepath(ctx.arg.output).filename().string() : std::string(ctx.arg.soname);
+    std::string ver = ctx.arg.soname;
+    if (ver.empty())
+      ver = path_filename(ctx.arg.output);
+
     ctx.arg.version_definitions.push_back(ver);
     ctx.default_version = VER_NDX_LAST_RESERVED + 1;
   }
@@ -1495,8 +1538,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   // However, that mechanism doesn't protect .so files. Therefore, we
   // want to disable this optimization if we are creating a shared
   // object file.
-  if (ctx.arg.shared)
-    ctx.overwrite_output_file = false;
+  ctx.overwrite_output_file = (!ctx.arg.shared && returns_etxtbsy());
 
   if (!ctx.arg.chroot.empty()) {
     if (!ctx.arg.Map.empty())

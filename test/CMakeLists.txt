@@ -18,7 +18,7 @@ endif()
 
 if(${MACHINE} MATCHES "amd64")
   set(MACHINE x86_64)
-elseif(${MACHINE} MATCHES "i386")
+elseif(${MACHINE} MATCHES "i.86")
   set(MACHINE i686)
 elseif(${MACHINE} MATCHES "arm.*")
   set(MACHINE arm)
@@ -30,13 +30,14 @@ endif()
 
 if(MOLD_ENABLE_QEMU_TESTS)
   list(APPEND QEMU_ARCHS
-    x86_64 i386 arm aarch64 ppc ppc64 ppc64le sparc64 sh4 s390x
-    riscv64 riscv32 m68k loongarch64)
+    x86_64 i386 arm aarch64 aarch64_be ppc ppc64 ppc64le sparc64 sh4 sh4eb
+    s390x riscv64 riscv32 m68k loongarch64)
 
   LIST(APPEND TRIPLES
     x86_64-linux-gnu
     i686-linux-gnu
     aarch64-linux-gnu
+    aarch64_be-linux-gnu
     arm-linux-gnueabihf
     riscv64-linux-gnu
     powerpc-linux-gnu
@@ -45,6 +46,7 @@ if(MOLD_ENABLE_QEMU_TESTS)
     sparc64-linux-gnu
     s390x-linux-gnu
     sh4-linux-gnu
+    sh4aeb-linux-gnu
     riscv32-linux-gnu
     m68k-linux-gnu
     loongarch64-linux-gnu)
@@ -111,6 +113,10 @@ if(${MACHINE} STREQUAL "aarch64" OR (HAS_qemu-aarch64 AND HAS_aarch64-linux-gnu-
   add_target(aarch64 aarch64-linux-gnu)
 endif()
 
+if(${MACHINE} STREQUAL "aarch64_be" OR (HAS_qemu-aarch64_be AND HAS_aarch64_be-linux-gnu-gcc))
+  add_target(aarch64_be aarch64_be-linux-gnu)
+endif()
+
 if(${MACHINE} STREQUAL "arm" OR (HAS_qemu-arm AND HAS_arm-linux-gnueabihf-gcc))
   add_target(arm arm-linux-gnueabihf)
 endif()
@@ -165,6 +171,10 @@ endif()
 
 if(${MACHINE} STREQUAL "sh4" OR (HAS_qemu-sh4 AND HAS_sh4-linux-gnu-gcc))
   add_target(sh4 sh4-linux-gnu)
+endif()
+
+if(${MACHINE} STREQUAL "sh4aeb" OR (HAS_qemu-sh4eb AND HAS_sh4aeb-linux-gnu-gcc))
+  add_target(sh4aeb sh4aeb-linux-gnu)
 endif()
 
 if(${MACHINE} STREQUAL "m68k" OR (HAS_qemu-m68k AND HAS_m68k-linux-gnu-gcc))

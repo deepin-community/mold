@@ -29,8 +29,8 @@ int main() {
 EOF
 
 $CC -B. -o $t/exe -flto $t/d.o $t/c.a
-$QEMU $t/exe | grep -q 'Hello world'
+$QEMU $t/exe | grep 'Hello world'
 
 nm $t/exe > $t/log
-grep -q hello $t/log
-! grep -q howdy $t/log || false
+grep hello $t/log
+not grep howdy $t/log

@@ -17,11 +17,13 @@
 //
 // https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst
 
+#if MOLD_ARM64LE || MOLD_ARM64BE
+
 #include "mold.h"
 
 namespace mold {
 
-using E = ARM64;
+using E = MOLD_TARGET;
 
 static void write_adrp(u8 *buf, u64 val) {
   *(ul32 *)buf |= (bits(val, 13, 12) << 29) | (bits(val, 32, 14) << 5);
@@ -110,13 +112,13 @@ void EhFrameSection<E>::apply_eh_reloc(Context<E> &ctx, const ElfRel<E> &rel,
   case R_NONE:
     break;
   case R_AARCH64_ABS64:
-    *(ul64 *)loc = val;
+    *(U64<E> *)loc = val;
     break;
   case R_AARCH64_PREL32:
-    *(ul32 *)loc = val - this->shdr.sh_addr - offset;
+    *(U32<E> *)loc = val - this->shdr.sh_addr - offset;
     break;
   case R_AARCH64_PREL64:
-    *(ul64 *)loc = val - this->shdr.sh_addr - offset;
+    *(U64<E> *)loc = val - this->shdr.sh_addr - offset;
     break;
   default:
     Fatal(ctx) << "unsupported relocation in .eh_frame: " << rel;
@@ -236,7 +238,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
           i + 1 < rels.size()) {
         i64 val = S + A - P - 4;
         const ElfRel<E> &rel2 = rels[i + 1];
-        if (sign_extend(val, 20) == val &&
+        if (is_int(val, 21) &&
             rel2.r_type == R_AARCH64_ADD_ABS_LO12_NC &&
             rel2.r_sym == rel.r_sym &&
             rel2.r_offset == rel.r_offset + 4 &&
@@ -275,14 +277,14 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       }
 
       i64 val = S + A - P;
-      if (val < -(1 << 27) || (1 << 27) <= val)
-        val = get_thunk_addr(i) + A - P;
+      if (!is_int(val, 28))
+        val = sym.get_thunk_addr(ctx, P) + A - P;
       *(ul32 *)loc |= bits(val, 27, 2);
       break;
     }
     case R_AARCH64_PLT32:
       check(S + A - P, -(1LL << 31), 1LL << 31);
-      *(ul32 *)loc = S + A - P;
+      *(U32<E> *)loc = S + A - P;
       break;
     case R_AARCH64_CONDBR19:
     case R_AARCH64_LD_PREL_LO19:
@@ -291,14 +293,14 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       break;
     case R_AARCH64_PREL16:
       check(S + A - P, -(1LL << 15), 1LL << 15);
-      *(ul16 *)loc = S + A - P;
+      *(U16<E> *)loc = S + A - P;
       break;
     case R_AARCH64_PREL32:
       check(S + A - P, -(1LL << 31), 1LL << 32);
-      *(ul32 *)loc = S + A - P;
+      *(U32<E> *)loc = S + A - P;
       break;
     case R_AARCH64_PREL64:
-      *(ul64 *)loc = S + A - P;
+      *(U64<E> *)loc = S + A - P;
       break;
     case R_AARCH64_LD64_GOT_LO12_NC:
       *(ul32 *)loc |= bits(G + GOT + A, 11, 3) << 10;
@@ -463,14 +465,14 @@ void InputSection<E>::apply_reloc_nonalloc(Context<E> &ctx, u8 *base) {
     switch (rel.r_type) {
     case R_AARCH64_ABS64:
       if (std::optional<u64> val = get_tombstone(sym, frag))
-        *(ul64 *)loc = *val;
+        *(U64<E> *)loc = *val;
       else
-        *(ul64 *)loc = S + A;
+        *(U64<E> *)loc = S + A;
       break;
     case R_AARCH64_ABS32: {
       i64 val = S + A;
       check(val, 0, 1LL << 32);
-      *(ul32 *)loc = val;
+      *(U32<E> *)loc = val;
       break;
     }
     default:
@@ -619,3 +621,5 @@ void Thunk<E>::copy_buf(Context<E> &ctx) {
 }
 
 } // namespace mold
+
+#endif

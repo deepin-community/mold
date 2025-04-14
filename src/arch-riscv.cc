@@ -22,8 +22,6 @@
 #include "mold.h"
 
 #include <regex>
-#include <tbb/parallel_for.h>
-#include <tbb/parallel_for_each.h>
 
 namespace mold {
 
@@ -88,6 +86,10 @@ static void set_rs1(u8 *loc, u32 rs1) {
   *(ul32 *)loc |= rs1 << 15;
 }
 
+static u32 get_rd(u8 *loc) {
+  return bits(*(u32 *)loc, 11, 7);
+};
+
 template <>
 void write_plt_header<E>(Context<E> &ctx, u8 *buf) {
   constexpr ul32 insn_64[] = {
@@ -121,14 +123,14 @@ void write_plt_header<E>(Context<E> &ctx, u8 *buf) {
   write_itype(buf + 16, gotplt - plt);
 }
 
-constexpr ul32 plt_entry_64[] = {
+static constexpr ul32 plt_entry_64[] = {
   0x0000'0e17, // auipc   t3, %pcrel_hi(function@.got.plt)
   0x000e'3e03, // ld      t3, %pcrel_lo(1b)(t3)
   0x000e'0367, // jalr    t1, t3
   0x0010'0073, // ebreak
 };
 
-constexpr ul32 plt_entry_32[] = {
+static constexpr ul32 plt_entry_32[] = {
   0x0000'0e17, // auipc   t3, %pcrel_hi(function@.got.plt)
   0x000e'2e03, // lw      t3, %pcrel_lo(1b)(t3)
   0x000e'0367, // jalr    t1, t3
@@ -198,30 +200,75 @@ void EhFrameSection<E>::apply_eh_reloc(Context<E> &ctx, const ElfRel<E> &rel,
   }
 }
 
-static inline bool is_hi20(const ElfRel<E> &rel) {
-  u32 ty = rel.r_type;
-  return ty == R_RISCV_GOT_HI20 || ty == R_RISCV_TLS_GOT_HI20 ||
-         ty == R_RISCV_TLS_GD_HI20 || ty == R_RISCV_PCREL_HI20 ||
-         ty == R_RISCV_TLSDESC_HI20;
+// RISC-V generally uses the AUIPC + ADDI/LW/SW/etc instruction pair
+// to access the AUIPC's address ± 2 GiB. AUIPC materializes the most
+// significant 52 bits in a PC-relative manner, and the following
+// instruction specifies the remaining least significant 12 bits.
+// There are several HI20 and LO12 relocation types for them.
+//
+// LO12 relocations need to materialize an address relative to AUIPC's
+// address, not relative to the instruction that the relocation
+// directly refers to.
+//
+// The problem here is that the instruction pair may not always be
+// adjacent. We need a mechanism to find a paired AUIPC for a given
+// LO12 relocation. For this purpose, the compiler creates a local
+// symbol for each location to which HI20 refers, and the LO12
+// relocation refers to that symbol.
+//
+// This function returns a paired HI20 relocation for a given LO12.
+// Since the instructions are typically adjacent, we do a linear
+// search.
+static const ElfRel<E> &
+find_paired_reloc(Context<E> &ctx, InputSection<E> &isec,
+                  std::span<const ElfRel<E>> rels,
+                  Symbol<E> &sym, i64 i) {
+  auto is_hi20 = [](u32 ty) {
+    return ty == R_RISCV_GOT_HI20 || ty == R_RISCV_TLS_GOT_HI20 ||
+           ty == R_RISCV_TLS_GD_HI20 || ty == R_RISCV_PCREL_HI20 ||
+           ty == R_RISCV_TLSDESC_HI20;
+  };
+
+  u64 value = sym.esym().st_value;
+
+  if (value <= rels[i].r_offset) {
+    for (i64 j = i - 1; j >= 0; j--)
+      if (is_hi20(rels[j].r_type) && value == rels[j].r_offset)
+        return rels[j];
+  } else {
+    for (i64 j = i + 1; j < rels.size(); j++)
+      if (is_hi20(rels[j].r_type) && value == rels[j].r_offset)
+        return rels[j];
+  }
+  Fatal(ctx) << isec << ": paired relocation is missing: " << i;
 }
 
 template <>
 void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
   std::span<const ElfRel<E>> rels = get_rels(ctx);
-  u64 GP = ctx.__global_pointer ? ctx.__global_pointer->get_addr(ctx) : 0;
-
-  auto get_r_delta = [&](i64 idx) {
-    return extra.r_deltas.empty() ? 0 : extra.r_deltas[idx];
-  };
+  std::span<RelocDelta> deltas = extra.r_deltas;
+  i64 k = 0;
+  u8 *buf = (u8 *)contents.data();
 
   for (i64 i = 0; i < rels.size(); i++) {
     const ElfRel<E> &rel = rels[i];
     if (rel.r_type == R_NONE || rel.r_type == R_RISCV_RELAX)
       continue;
 
+    i64 removed_bytes = 0;
+    i64 r_delta = 0;
+
+    if (!deltas.empty()) {
+      while (k < deltas.size() && deltas[k].offset < rel.r_offset)
+        k++;
+      if (k < deltas.size() && deltas[k].offset == rel.r_offset)
+        removed_bytes = get_removed_bytes(deltas, k);
+      if (k > 0)
+        r_delta = deltas[k - 1].delta;
+    }
+
     Symbol<E> &sym = *file.symbols[rel.r_sym];
-    i64 r_offset = rel.r_offset - get_r_delta(i);
-    i64 removed_bytes = get_r_delta(i + 1) - get_r_delta(i);
+    i64 r_offset = rel.r_offset - r_delta;
     u8 *loc = base + r_offset;
 
     auto check = [&](i64 val, i64 lo, i64 hi) {
@@ -229,25 +276,6 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
         Error(ctx) << *this << ": relocation " << rel << " against "
                    << sym << " out of range: " << val << " is not in ["
                    << lo << ", " << hi << ")";
-    };
-
-    auto find_paired_reloc = [&] {
-      if (sym.value <= rels[i].r_offset - get_r_delta(i)) {
-        for (i64 j = i - 1; j >= 0; j--)
-          if (is_hi20(rels[j]) && sym.value == rels[j].r_offset - get_r_delta(j))
-            return j;
-      } else {
-        for (i64 j = i + 1; j < rels.size(); j++)
-          if (is_hi20(rels[j]) && sym.value == rels[j].r_offset - get_r_delta(j))
-            return j;
-      }
-
-      Fatal(ctx) << *this << ": paired relocation is missing: " << i;
-    };
-
-    auto get_rd = [&](i64 offset) {
-      // Returns the rd register of an R/I/U/J-type instruction.
-      return bits(*(ul32 *)(contents.data() + offset), 11, 7);
     };
 
     u64 S = sym.get_addr(ctx);
@@ -274,7 +302,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
     case R_RISCV_CALL:
     case R_RISCV_CALL_PLT: {
       i64 val = S + A - P;
-      i64 rd = get_rd(rel.r_offset + 4);
+      i64 rd = get_rd(buf + rel.r_offset + 4);
 
       // Calling an undefined weak symbol does not make sense.
       // We make such call into an infinite loop. This should
@@ -308,22 +336,20 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       // pair to load a symbol value from the GOT. If the symbol value
       // is actually a link-time constant, we can materialize the value
       // directly into a register to eliminate a memory load.
-      i64 rd = get_rd(rel.r_offset);
+      i64 rd = get_rd(buf + rel.r_offset);
 
-      switch (removed_bytes) {
-      case 6:
+      if (removed_bytes == 6) {
         // c.li <rd>, val
         *(ul16 *)loc = 0b010'0'00000'00000'01 | (rd << 7);
         write_citype(loc, sym.get_addr(ctx));
         i += 3;
-        break;
-      case 4:
+      } else if (removed_bytes == 4) {
         // addi <rd>, zero, val
         *(ul32 *)loc = 0b0010011 | (rd << 7);
         write_itype(loc, sym.get_addr(ctx));
         i += 3;
-        break;
-      case 0:
+      } else {
+        assert(removed_bytes == 0);
         if (ctx.arg.relax &&
             sym.is_pcrel_linktime_const(ctx) &&
             i + 3 < rels.size() &&
@@ -333,7 +359,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
             file.symbols[rels[i + 2].r_sym]->value == r_offset &&
             rels[i + 3].r_type == R_RISCV_RELAX) {
           i64 val = S + A - P;
-          if (rd == get_rd(rel.r_offset + 4) && (i32)val == val) {
+          if (rd == get_rd(buf + rel.r_offset + 4) && (i32)val == val) {
             // auipc <rd>, %hi20(val)
             write_utype(loc, val);
 
@@ -344,11 +370,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
             break;
           }
         }
-
         write_utype(loc, G + GOT + A - P);
-        break;
-      default:
-        unreachable();
       }
       break;
     }
@@ -362,50 +384,38 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       write_utype(loc, S + A - P);
       break;
     case R_RISCV_PCREL_LO12_I:
-    case R_RISCV_PCREL_LO12_S:
-    case R_RISCV_GPREL_LO12_I:
-    case R_RISCV_GPREL_LO12_S: {
-      i64 idx2 = find_paired_reloc();
-      const ElfRel<E> &rel2 = rels[idx2];
+    case R_RISCV_PCREL_LO12_S: {
+      const ElfRel<E> &rel2 = find_paired_reloc(ctx, *this, rels, sym, i);
       Symbol<E> &sym2 = *file.symbols[rel2.r_sym];
+
+      auto write =
+        (rel.r_type == R_RISCV_PCREL_LO12_I) ? write_itype : write_stype;
 
       u64 S = sym2.get_addr(ctx);
       u64 A = rel2.r_addend;
-      u64 P = get_addr() + rel2.r_offset - get_r_delta(idx2);
+      u64 P = get_addr() + rel2.r_offset - get_r_delta(*this, rel2.r_offset);
       u64 G = sym2.get_got_idx(ctx) * sizeof(Word<E>);
-      u64 val;
 
       switch (rel2.r_type) {
       case R_RISCV_GOT_HI20:
-        val = G + GOT + A - P;
+        write(loc, G + GOT + A - P);
         break;
       case R_RISCV_TLS_GOT_HI20:
-        val = sym2.get_gottp_addr(ctx) + A - P;
+        write(loc, sym2.get_gottp_addr(ctx) + A - P);
         break;
       case R_RISCV_TLS_GD_HI20:
-        val = sym2.get_tlsgd_addr(ctx) + A - P;
+        write(loc, sym2.get_tlsgd_addr(ctx) + A - P);
         break;
       case R_RISCV_PCREL_HI20:
-        val = S + A - P;
+        write(loc, S + A - P);
         break;
-      case R_RISCV_GPREL_HI20:
-        val = S + A - GP;
-        break;
-      default:
-        unreachable();
       }
-
-      if (rel.r_type == R_RISCV_PCREL_LO12_I ||
-          rel.r_type == R_RISCV_GPREL_LO12_I)
-        write_itype(loc, val);
-      else
-        write_stype(loc, val);
       break;
     }
     case R_RISCV_HI20:
       if (removed_bytes == 2) {
         // Rewrite LUI with C.LUI
-        i64 rd = get_rd(rel.r_offset);
+        i64 rd = get_rd(buf + rel.r_offset);
         *(ul16 *)loc = 0b011'0'00000'00000'01 | (rd << 7);
         write_citype(loc, (S + A + 0x800) >> 12);
       } else if (removed_bytes == 0) {
@@ -423,7 +433,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       // Rewrite `lw t1, 0(t0)` with `lw t1, 0(x0)` if the address is
       // accessible relative to the zero register because if that's the
       // case, corresponding LUI might have been removed by relaxation.
-      if (sign_extend(S + A, 11) == S + A)
+      if (is_int(S + A, 12))
         set_rs1(loc, 0);
       break;
     case R_RISCV_TPREL_HI20:
@@ -447,7 +457,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
 
       // Rewrite `lw t1, 0(t0)` with `lw t1, 0(tp)` if the address is
       // directly accessible using tp. tp is x4.
-      if (sign_extend(val, 11) == val)
+      if (is_int(val, 12))
         set_rs1(loc, 4);
       break;
     }
@@ -486,7 +496,11 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       //   <deleted>
       //   lui    a0, %tpoff_hi(a0)
       //   addi   a0, a0, %tpoff_lo(a0)
-      if (removed_bytes == 0)
+      //
+      // If the code-shrinking relaxation is disabled, we may leave
+      // original useless instructions instead of deleting them, but we
+      // accept that because relaxations are enabled by default.
+      if (sym.has_tlsdesc(ctx) && removed_bytes == 0)
         write_utype(loc, sym.get_tlsdesc_addr(ctx) + A - P);
       break;
     case R_RISCV_TLSDESC_LOAD_LO12:
@@ -495,17 +509,19 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       if (removed_bytes == 4)
         break;
 
-      i64 idx2 = find_paired_reloc();
-      const ElfRel<E> &rel2 = rels[idx2];
+      const ElfRel<E> &rel2 = find_paired_reloc(ctx, *this, rels, sym, i);
       Symbol<E> &sym2 = *file.symbols[rel2.r_sym];
 
       u64 S = sym2.get_addr(ctx);
       u64 A = rel2.r_addend;
-      u64 P = get_addr() + rel2.r_offset - get_r_delta(idx2);
+      u64 P = get_addr() + rel2.r_offset - get_r_delta(*this, rel2.r_offset);
 
       switch (rel.r_type) {
       case R_RISCV_TLSDESC_LOAD_LO12:
-        write_itype(loc, sym2.get_tlsdesc_addr(ctx) + A - P);
+        if (sym2.has_tlsdesc(ctx))
+          write_itype(loc, sym2.get_tlsdesc_addr(ctx) + A - P);
+        else
+          *(ul32 *)loc = 0x13; // nop
         break;
       case R_RISCV_TLSDESC_ADD_LO12:
         if (sym2.has_tlsdesc(ctx)) {
@@ -527,7 +543,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
           write_itype(loc, sym2.get_gottp_addr(ctx) + A - P);
         } else {
           i64 val = S + A - ctx.tp_addr;
-          if (sign_extend(val, 11) == val)
+          if (is_int(val, 12))
             *(ul32 *)loc = 0x513;   // addi a0,zero,<lo12>
           else
             *(ul32 *)loc = 0x50513; // addi a0,a0,<lo12>
@@ -586,10 +602,6 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
     case R_RISCV_RVC_JUMP:
       check(S + A - P, -(1 << 11), 1 << 11);
       write_cjtype(loc, S + A - P);
-      break;
-    case R_RISCV_GPREL_HI20:
-      check(S + A - GP, -(1LL << 31), 1LL << 31);
-      write_utype(loc, S + A - GP);
       break;
     case R_RISCV_SUB6:
       *loc = (*loc & 0b1100'0000) | ((*loc - S - A) & 0b0011'1111);
@@ -756,10 +768,6 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_RISCV_TPREL_ADD:
       check_tlsle(ctx, sym, rel);
       break;
-    case R_RISCV_GPREL_HI20:
-      if (ctx.arg.shared)
-        Error(ctx) << *this << ": R_RISCV_GPREL_HI20 may not be used with -shared";
-      break;
     case R_RISCV_64:
     case R_RISCV_BRANCH:
     case R_RISCV_JAL:
@@ -781,8 +789,6 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_RISCV_ALIGN:
     case R_RISCV_RVC_BRANCH:
     case R_RISCV_RVC_JUMP:
-    case R_RISCV_GPREL_LO12_I:
-    case R_RISCV_GPREL_LO12_S:
     case R_RISCV_RELAX:
     case R_RISCV_SUB6:
     case R_RISCV_SET6:
@@ -806,9 +812,9 @@ u64 get_eflags(Context<E> &ctx) {
   if (objs.empty())
     return 0;
 
-  u32 ret = objs[0]->get_ehdr().e_flags;
+  u32 ret = objs[0]->get_eflags();
   for (i64 i = 1; i < objs.size(); i++) {
-    u32 flags = objs[i]->get_ehdr().e_flags;
+    u32 flags = objs[i]->get_eflags();
     if (flags & EF_RISCV_RVC)
       ret |= EF_RISCV_RVC;
 
@@ -823,22 +829,26 @@ u64 get_eflags(Context<E> &ctx) {
   return ret;
 }
 
-// Scan relocations to a given shrink section.
+// Scan relocations to shrink a given section.
 template <>
-void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
+void shrink_section(Context<E> &ctx, InputSection<E> &isec) {
   std::span<const ElfRel<E>> rels = isec.get_rels(ctx);
-  isec.extra.r_deltas.resize(rels.size() + 1);
+  std::vector<RelocDelta> &deltas = isec.extra.r_deltas;
+  i64 r_delta = 0;
+  u8 *buf = (u8 *)isec.contents.data();
 
-  auto get_rd = [&](i64 offset) {
-    return bits(*(ul32 *)(isec.contents.data() + offset), 11, 7);
-  };
-
-  i64 delta = 0;
+  // True if we can use 2-byte instructions. This is usually true on
+  // Unix because RV64GC is generally considered the baseline hardware.
+  bool use_rvc = isec.file.get_eflags() & EF_RISCV_RVC;
 
   for (i64 i = 0; i < rels.size(); i++) {
     const ElfRel<E> &r = rels[i];
     Symbol<E> &sym = *isec.file.symbols[r.r_sym];
-    isec.extra.r_deltas[i] = delta;
+
+    auto remove = [&](i64 d) {
+      r_delta += d;
+      deltas.push_back(RelocDelta{r.r_offset, r_delta});
+    };
 
     // Handling R_RISCV_ALIGN is mandatory.
     //
@@ -848,11 +858,11 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
     if (r.r_type == R_RISCV_ALIGN) {
       // The total bytes of NOPs is stored to r_addend, so the next
       // instruction is r_addend away.
-      u64 loc = isec.get_addr() + r.r_offset - delta;
-      u64 next_loc = loc + r.r_addend;
-      u64 alignment = bit_ceil(r.r_addend + 1);
-      assert(alignment <= (1 << isec.p2align));
-      delta += next_loc - align_to(loc, alignment);
+      u64 P = isec.get_addr() + r.r_offset - r_delta;
+      u64 desired = align_to(P, bit_ceil(r.r_addend));
+      u64 actual = P + r.r_addend;
+      if (desired != actual)
+        remove(actual - desired);
       continue;
     }
 
@@ -869,20 +879,6 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
     if (sym.file == ctx.internal_obj)
       continue;
 
-    auto find_paired_reloc = [&] {
-      if (sym.value <= rels[i].r_offset) {
-        for (i64 j = i - 1; j >= 0; j--)
-          if (is_hi20(rels[j]) && sym.value == rels[j].r_offset)
-            return j;
-      } else {
-        for (i64 j = i + 1; j < rels.size(); j++)
-          if (is_hi20(rels[j]) && sym.value == rels[j].r_offset)
-            return j;
-      }
-
-      Fatal(ctx) << isec << ": paired relocation is missing: " << i;
-    };
-
     switch (r.r_type) {
     case R_RISCV_CALL:
     case R_RISCV_CALL_PLT: {
@@ -893,19 +889,19 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
       if (dist & 1)
         break;
 
-      i64 rd = get_rd(r.r_offset + 4);
+      i64 rd = get_rd(buf + r.r_offset + 4);
 
-      if (use_rvc && rd == 0 && sign_extend(dist, 11) == dist) {
+      if (use_rvc && rd == 0 && is_int(dist, 12)) {
         // If rd is x0 and the jump target is within ±2 KiB, we can use
         // C.J, saving 6 bytes.
-        delta += 6;
-      } else if (use_rvc && !E::is_64 && rd == 1 && sign_extend(dist, 11) == dist) {
+        remove(6);
+      } else if (use_rvc && !E::is_64 && rd == 1 && is_int(dist, 12)) {
         // If rd is x1 and the jump target is within ±2 KiB, we can use
         // C.JAL. This is RV32 only because C.JAL is RV32-only instruction.
-        delta += 6;
-      } else if (sign_extend(dist, 20) == dist) {
+        remove(6);
+      } else if (is_int(dist, 21)) {
         // If the jump target is within ±1 MiB, we can use JAL.
-        delta += 4;
+        remove(4);
       }
       break;
     }
@@ -921,17 +917,17 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
           rels[i + 2].r_offset == rels[i].r_offset + 4 &&
           isec.file.symbols[rels[i + 2].r_sym]->value == rels[i].r_offset &&
           rels[i + 3].r_type == R_RISCV_RELAX) {
-        i64 rd = get_rd(r.r_offset);
+        i64 rd = get_rd(buf + r.r_offset);
 
-        if (rd == get_rd(r.r_offset + 4)) {
+        if (rd == get_rd(buf + r.r_offset + 4)) {
           u64 val = sym.get_addr(ctx) + r.r_addend;
 
-          if (use_rvc && rd != 0 && sign_extend(val, 5) == val) {
+          if (use_rvc && rd != 0 && is_int(val, 6)) {
             // Replace AUIPC + LD with C.LI.
-            delta += 6;
-          } else if (sign_extend(val, 11) == val) {
+            remove(6);
+          } else if (is_int(val, 12)) {
             // Replace AUIPC + LD with ADDI.
-            delta += 4;
+            remove(4);
           }
         }
       }
@@ -939,17 +935,17 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
     }
     case R_RISCV_HI20: {
       u64 val = sym.get_addr(ctx) + r.r_addend;
-      i64 rd = get_rd(r.r_offset);
+      i64 rd = get_rd(buf + r.r_offset);
 
-      if (sign_extend(val, 11) == val) {
+      if (is_int(val, 12)) {
         // We can replace `lui t0, %hi(foo)` and `add t0, t0, %lo(foo)`
         // instruction pair with `add t0, x0, %lo(foo)` if foo's bits
         // [32:11] are all one or all zero.
-        delta += 4;
-      } else if (use_rvc && rd != 0 && rd != 2 && sign_extend(val, 17) == val) {
+        remove(4);
+      } else if (use_rvc && rd != 0 && rd != 2 && is_int(val + 0x800, 18)) {
         // If the upper 20 bits can actually be represented in 6 bits,
         // we can use C.LUI instead of LUI.
-        delta += 2;
+        remove(2);
       }
       break;
     }
@@ -975,35 +971,34 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
       //
       // Here, we remove `lui` and `add` if the offset is within ±2 KiB.
       if (i64 val = sym.get_addr(ctx) + r.r_addend - ctx.tp_addr;
-          sign_extend(val, 11) == val)
-        delta += 4;
+          is_int(val, 12))
+        remove(4);
       break;
     case R_RISCV_TLSDESC_HI20:
       if (!sym.has_tlsdesc(ctx))
-        delta += 4;
+        remove(4);
       break;
     case R_RISCV_TLSDESC_LOAD_LO12:
     case R_RISCV_TLSDESC_ADD_LO12: {
-      const ElfRel<E> &rel2 = rels[find_paired_reloc()];
+      const ElfRel<E> &rel2 = find_paired_reloc(ctx, isec, rels, sym, i);
       Symbol<E> &sym2 = *isec.file.symbols[rel2.r_sym];
 
       if (r.r_type == R_RISCV_TLSDESC_LOAD_LO12) {
         if (!sym2.has_tlsdesc(ctx))
-          delta += 4;
+          remove(4);
       } else {
         assert(r.r_type == R_RISCV_TLSDESC_ADD_LO12);
         if (!sym2.has_tlsdesc(ctx) && !sym2.has_gottp(ctx))
           if (i64 val = sym2.get_addr(ctx) + rel2.r_addend - ctx.tp_addr;
-              sign_extend(val, 11) == val)
-            delta += 4;
+              is_int(val, 12))
+            remove(4);
       }
       break;
     }
     }
   }
 
-  isec.extra.r_deltas[rels.size()] = delta;
-  isec.sh_size -= delta;
+  isec.sh_size -= r_delta;
 }
 
 // ISA name handlers

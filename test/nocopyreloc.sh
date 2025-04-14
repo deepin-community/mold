@@ -27,8 +27,7 @@ int main() {
 EOF
 
 $CC -B. -no-pie -o $t/exe $t/a.so $t/b.o
-$QEMU $t/exe | grep -q '3 5'
+$QEMU $t/exe | grep '3 5'
 
-! $CC -B. -o $t/exe $t/a.so $t/b.o -no-pie -Wl,-z,nocopyreloc 2> $t/log || false
-
-grep -q 'recompile with -fPIC' $t/log
+not $CC -B. -o $t/exe $t/a.so $t/b.o -no-pie -Wl,-z,nocopyreloc |&
+  grep 'recompile with -fPIC'

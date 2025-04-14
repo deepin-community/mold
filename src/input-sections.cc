@@ -1,6 +1,5 @@
 #include "mold.h"
 
-#include <limits>
 #include <zlib.h>
 #include <zstd.h>
 
@@ -116,6 +115,11 @@ static void do_action(Context<E> &ctx, Action action, InputSection<E> &isec,
     break;
   case COPYREL:
     // Create a copy relocation
+    if (!sym.file->is_dso) {
+      assert(sym.esym().is_undef_weak());
+      Error(ctx) << isec << ": cannot create a copy relocation for "
+                 << sym <<"; recompile with -fPIE or -fPIC";
+    }
     sym.flags |= NEEDS_COPYREL;
     break;
   case PLT:
@@ -226,27 +230,24 @@ void InputSection<E>::write_to(Context<E> &ctx, u8 *buf) {
   // relocations are allowed to remove bytes from the middle of a
   // section and shrink the overall size of it.
   if constexpr (is_riscv<E> || is_loongarch<E>) {
-    if (extra.r_deltas.empty()) {
+    std::span<RelocDelta> deltas = extra.r_deltas;
+
+    if (deltas.empty()) {
       // If a section is not relaxed, we can copy it as a one big chunk.
       copy_contents(ctx, buf);
     } else {
       // A relaxed section is copied piece-wise.
-      std::span<const ElfRel<E>> rels = get_rels(ctx);
-      u8 *buf2 = buf;
-      i64 pos = 0;
+      memcpy(buf, contents.data(), deltas[0].offset);
 
-      for (i64 i = 0; i < rels.size(); i++) {
-        i64 delta = extra.r_deltas[i + 1] - extra.r_deltas[i];
-        if (delta == 0)
-          continue;
-        assert(delta > 0);
-
-        const ElfRel<E> &r = rels[i];
-        memcpy(buf2, contents.data() + pos, r.r_offset - pos);
-        buf2 += r.r_offset - pos;
-        pos = r.r_offset + delta;
+      for (i64 i = 0; i < deltas.size(); i++) {
+        i64 offset = deltas[i].offset;
+        i64 delta = deltas[i].delta;
+        i64 end = (i + 1 == deltas.size()) ? contents.size() : deltas[i + 1].offset;
+        i64 removed_bytes = get_removed_bytes(deltas, i);
+        memcpy(buf + offset + removed_bytes - delta,
+               contents.data() + offset + removed_bytes,
+               end - offset - removed_bytes);
       }
-      memcpy(buf2, contents.data() + pos, contents.size() - pos);
     }
   } else {
     copy_contents(ctx, buf);
@@ -342,7 +343,7 @@ bool InputSection<E>::record_undef_error(Context<E> &ctx, const ElfRel<E> &rel) 
 template <typename E>
 MergeableSection<E>::MergeableSection(Context<E> &ctx, MergedSection<E> &parent,
                                       std::unique_ptr<InputSection<E>> &isec)
-  : parent(parent), section(std::move(isec)), p2align(section->p2align) {
+  : parent(parent), p2align(isec->p2align), section(std::move(isec)) {
   section->uncompress(ctx);
 
   std::scoped_lock lock(parent.mu);
@@ -381,8 +382,7 @@ template <typename E>
 void MergeableSection<E>::split_contents(Context<E> &ctx) {
   std::string_view data = section->contents;
   if (data.size() > UINT32_MAX)
-    Fatal(ctx) << *section
-               << ": mergeable section too large";
+    Fatal(ctx) << *section << ": mergeable section too large";
 
   i64 entsize = parent.shdr.sh_entsize;
 

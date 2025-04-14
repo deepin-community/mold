@@ -52,17 +52,21 @@ else
   OBJCOPY="$TRIPLE-objcopy"
   STRIP="$TRIPLE-strip"
 
-  if [ $MACHINE = i686 ]; then
-    QEMU="qemu-i386 -L /usr/$TRIPLE"
-  else
-    QEMU="qemu-$MACHINE -L /usr/$TRIPLE"
-  fi
+  case $MACHINE in
+  i686)   QEMU="qemu-i386 -L /usr/$TRIPLE" ;;
+  sh4aeb) QEMU="qemu-sh4eb -L /usr/$TRIPLE" ;;
+  *)      QEMU="qemu-$MACHINE -L /usr/$TRIPLE" ;;
+  esac
 fi
+
+testname=$(basename "$0" .sh)
+t=$TESTDIR/$testname
+mkdir -p $t
 
 case $MACHINE in
 x86_64 | i686 | arm)
   tlsdesc_opt=-mtls-dialect=gnu2 ;;
-aarch64 | loongarch*)
+aarch64 | riscv* | loongarch*)
   tlsdesc_opt=-mtls-dialect=desc ;;
 esac
 
@@ -73,6 +77,10 @@ if [ "$(uname)" = FreeBSD ]; then
 fi
 
 # Common functions
+not() {
+  if "$@"; then return 1; else return 0; fi
+}
+
 test_cflags() {
   echo 'int main() {}' | $CC -B. "$@" -o /dev/null -xc - >& /dev/null
 }
@@ -82,12 +90,12 @@ test_cxxflags() {
 }
 
 is_musl() {
-  ldd --version 2>&1 | grep -q musl
+  { ldd --version; true; } |& grep musl > /dev/null
 }
 
 supports_ifunc() {
-  ! is_musl && \
-    echo 'void x() __attribute__((ifunc("y"))); void *y() { return 0; }' | \
+  ! is_musl &&
+    echo 'void x() __attribute__((ifunc("y"))); void *y() { return 0; }' |
     $CC -c -o /dev/null -xc - >& /dev/null
 }
 
@@ -98,11 +106,20 @@ supports_tlsdesc() {
   # FreeBSD's loader doesn't seem to support TLSDESC relocs in an executable
   [ "$(uname)" = FreeBSD ] && return 1
 
-  [ "$tlsdesc_opt" != '' ]
+  [ "$tlsdesc_opt" = '' ] && return 1
+
+  # TLSDESC may not be supported on old systems. Compile a DSO with
+  # it to see if it is actually supported.
+  echo '_Thread_local int x; int y() { return x; }' |
+    $CC -shared -fPIC -xc -o $t/tlsdesc.so $tlsdesc_opt - 2> /dev/null ||
+    return 1
+  echo 'int y(); int main() { y(); }' | $CC -xc -c -o $t/tlsdesc.o -
+  $CC -o $t/tlsdesc $t/tlsdesc.o $t/tlsdesc.so
+  $QEMU $t/tlsdesc 2> /dev/null
 }
 
 on_qemu() {
-  [ "$QEMU" != '' ] || grep -qw qemu /proc/cpuinfo 2> /dev/null
+  [ "$QEMU" != '' ] || grep -w qemu /proc/cpuinfo >& /dev/null
 }
 
 skip() {
@@ -127,8 +144,6 @@ trap 'on_error $LINENO' ERR
 trap on_exit EXIT
 
 # Print out the startup message
-testname=$(basename "$0" .sh)
 echo -n "Testing $testname ... "
-t=$TESTDIR/$testname
-mkdir -p $t
+set -o pipefail
 set -x

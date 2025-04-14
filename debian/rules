@@ -20,3 +20,9 @@ export SYSTEM_MIMALLOC = 1
 
 override_dh_auto_configure:
 	dh_auto_configure
+
+override_dh_dwz:
+        # Don't do anything. 
+	# fails with 
+	# dwz: debian/mold/usr/bin/mold: elf_update failed
+	# dwz: Too few files for multifile optimization

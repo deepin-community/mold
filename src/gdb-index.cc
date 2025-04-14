@@ -58,7 +58,6 @@
 
 #include "mold.h"
 #include <tbb/parallel_for_each.h>
-#include <tbb/parallel_sort.h>
 
 namespace mold {
 
@@ -127,16 +126,10 @@ struct SectionHeader {
 };
 
 struct NameType {
-  bool operator==(const NameType &) const = default;
-
-  bool operator<(const NameType &other) const {
-    return std::tuple(hash, type, name) <
-           std::tuple(other.hash, other.type, other.name);
-  }
-
-  std::string_view name;
+  auto operator<=>(const NameType &) const = default;
   u64 hash;
   u8 type;
+  std::string_view name;
 };
 
 struct MapValue {
@@ -539,7 +532,7 @@ static i64 read_pubnames_cu(Context<E> &ctx, const PubnamesHdr &hdr,
     u8 type = *p++;
     std::string_view name = (char *)p;
     p += name.size() + 1;
-    cu->nametypes.push_back({name, hash_string(name), type});
+    cu->nametypes.push_back(NameType{hash_string(name), type, name});
   }
 
   return size;
@@ -626,7 +619,7 @@ static std::vector<Compunit> read_compunits(Context<E> &ctx) {
 
   // Uniquify elements because GCC 11 seems to emit one record for each
   // comdat group which results in having a lot of duplicate records.
-  tbb::parallel_for_each(cus, [&](Compunit &cu) {
+  tbb::parallel_for_each(cus, [](Compunit &cu) {
     sort(cu.nametypes);
     remove_duplicates(cu.nametypes);
   });

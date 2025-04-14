@@ -1,8 +1,8 @@
 #!/bin/bash
 . $(dirname $0)/common.inc
 
-nm mold | grep -q '__tsan_init' && skip
-
+[ $MACHINE = sh4aeb ] && skip
+nm mold | grep '__tsan_init' && skip
 command -v perl > /dev/null || skip
 
 [ $MACHINE = sh4 ] && skip
@@ -45,4 +45,4 @@ int main() {
 EOF
 
 $CXX -B. -o $t/exe1 $t/d.o $t/c.o
-$QEMU $t/exe1 | grep -q '^1 3$'
+$QEMU $t/exe1 | grep '^1 3$'

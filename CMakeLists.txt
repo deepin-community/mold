@@ -44,17 +44,11 @@
 # features and behave exactly the same.
 
 cmake_minimum_required(VERSION 3.14)
-project(mold VERSION 2.34.1)
+project(mold VERSION 2.37.1)
 
 include(CMakeDependentOption)
 include(CheckSymbolExists)
 include(GNUInstallDirs)
-
-# Build mold itself using mold if -DMOLD_USE_MOLD=ON
-option(MOLD_USE_MOLD "Use mold to build mold" OFF)
-if(MOLD_USE_MOLD)
-  add_link_options(-fuse-ld=mold -Wl,--gdb-index)
-endif()
 
 add_executable(mold)
 target_compile_features(mold PRIVATE cxx_std_20)
@@ -65,11 +59,23 @@ else()
   target_link_libraries(mold PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
+# Build mold itself using mold if -DMOLD_USE_MOLD=ON
+option(MOLD_USE_MOLD "Use mold to build mold" OFF)
+if(MOLD_USE_MOLD)
+  target_link_options(mold PRIVATE -fuse-ld=mold -Wl,--gdb-index)
+
+  if(CMAKE_BUILD_TYPE MATCHES "^Rel")
+    target_link_options(mold PRIVATE -Wl,--gc-sections,--icf=safe)
+  endif()
+endif()
+
 if(NOT "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
   target_compile_options(mold PRIVATE
     -fno-exceptions
     -fno-unwind-tables
     -fno-asynchronous-unwind-tables
+    -ffunction-sections
+    -fdata-sections
     -Wall
     -Wextra
     -Wno-sign-compare
@@ -174,7 +180,7 @@ endif()
 # be stable on 32-bit targets.
 cmake_dependent_option(
   MOLD_USE_MIMALLOC "Use mimalloc" ON
-  "CMAKE_SIZEOF_VOID_P EQUAL 8; NOT APPLE; NOT ANDROID; NOT OPENBSD" OFF)
+  "CMAKE_SIZEOF_VOID_P EQUAL 8; NOT APPLE; NOT ANDROID; NOT OPENBSD; NOT MOLD_USE_ASAN; NOT MOLD_USE_TSAN" OFF)
 
 cmake_dependent_option(
   MOLD_USE_SYSTEM_MIMALLOC "Use system or vendored mimalloc" OFF
@@ -187,7 +193,6 @@ if(MOLD_USE_MIMALLOC)
   if(MOLD_USE_SYSTEM_MIMALLOC)
     find_package(mimalloc REQUIRED)
     target_link_libraries(mold PRIVATE mimalloc)
-    target_compile_definitions(mold PRIVATE USE_SYSTEM_MIMALLOC)
   else()
     function(mold_add_mimalloc)
       set(MI_BUILD_STATIC ON CACHE INTERNAL "")
@@ -278,6 +283,7 @@ if(NOT APPLE AND NOT MSVC)
 endif()
 
 check_symbol_exists(madvise sys/mman.h HAVE_MADVISE)
+check_symbol_exists(uname sys/utsname.h HAVE_UNAME)
 
 # Create a .cc file containing the current git hash for `mold --version`.
 add_custom_target(git_hash
@@ -304,13 +310,16 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 # compiler instances. This is hacky but greatly reduces compile time
 # on a multicore machine.
 list(APPEND MOLD_ELF_TARGETS
-  X86_64 I386 ARM64 ARM32 RV32LE RV32BE RV64LE RV64BE PPC32 PPC64V1 PPC64V2
-  S390X SPARC64 M68K SH4 LOONGARCH32 LOONGARCH64)
+  X86_64 I386 ARM64LE ARM64BE ARM32 RV32LE RV32BE RV64LE RV64BE PPC32
+  PPC64V1 PPC64V2 S390X SPARC64 M68K SH4LE SH4BE LOONGARCH32 LOONGARCH64)
 
 list(APPEND MOLD_ELF_TEMPLATE_FILES
+  src/arch-arm64.cc
   src/arch-loongarch.cc
   src/arch-riscv.cc
+  src/arch-sh4.cc
   src/cmdline.cc
+  src/filetype.cc
   src/gc-sections.cc
   src/gdb-index.cc
   src/icf.cc
@@ -371,20 +380,18 @@ target_sources(mold PRIVATE
   lib/filepath.cc
   lib/glob.cc
   lib/hyperloglog.cc
-  lib/malloc.cc
+  lib/mimalloc.cc
   lib/multi-glob.cc
   lib/perf.cc
   lib/random.cc
   lib/tar.cc
   src/arch-arm32.cc
-  src/arch-arm64.cc
   src/arch-i386.cc
   src/arch-m68k.cc
   src/arch-ppc32.cc
   src/arch-ppc64v1.cc
   src/arch-ppc64v2.cc
   src/arch-s390x.cc
-  src/arch-sh4.cc
   src/arch-sparc64.cc
   src/arch-x86-64.cc
   src/config.cc
@@ -428,7 +435,6 @@ if(NOT CMAKE_SKIP_INSTALL_RULES)
   install(TARGETS mold RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   install(FILES docs/mold.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1/)
   install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
-  install(FILES "LICENSE.third-party" DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 
   function(mold_install_relative_symlink OLD NEW)
     install(CODE "
